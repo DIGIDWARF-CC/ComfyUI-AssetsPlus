@@ -9,6 +9,6 @@ Repository = "https://github.com/DIGIDWARF-CC/ComfyUI-AssetsPlus"
 Website = "https://digidwarf.art"
 
 [tool.comfy]
-PublisherId = "DIGIDWARF"
-DisplayName = "ComfyUI-AssetsPlus"
+PublisherId = "digidwarf"
+DisplayName = "digidwarf.AssetsPlus"
 Icon = "https://raw.githubusercontent.com/DIGIDWARF-CC/ComfyUI-AssetsPlus/refs/heads/main/meta/img/logo_1024x700.png"

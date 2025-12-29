@@ -1,9 +1,19 @@
 (() => {
+  const EXTENSION_NAME = "digidwarf.AssetsPlus";
   const DEFAULT_POLL_SECONDS = 5;
   const DEFAULT_THUMB_SIZE = 256;
   const DEFAULT_PAGE_LIMIT = 200;
   const DEFAULT_EXTENSIONS = ["png", "jpg", "jpeg", "webp", "mp4", "webm"];
-  const SIDEBAR_TAB_ID = "assets-plus-generated";
+  const SIDEBAR_TAB_ID = "assets";
+  const SETTINGS = {
+    pollSeconds: "AssetsPlus.PollSeconds",
+    deleteMode: "AssetsPlus.DeleteMode",
+    recursive: "AssetsPlus.Recursive",
+    scanDepth: "AssetsPlus.ScanDepth",
+    listLimit: "AssetsPlus.ListLimit",
+    thumbnailSize: "AssetsPlus.ThumbnailSize",
+    extensions: "AssetsPlus.AllowedExtensions",
+  };
 
   function getVue() {
     return window.Vue ?? window.comfyVue ?? null;
@@ -16,6 +26,23 @@
   function getVueApp() {
     const root = document.getElementById("vue-app");
     return root?.__vue_app__ ?? null;
+  }
+
+  function getApi(appInstance) {
+    return appInstance?.api ?? window.api ?? window.comfyApi ?? null;
+  }
+
+  function internalUrl(appInstance, path) {
+    const api = getApi(appInstance);
+    if (api?.internalURL) {
+      return api.internalURL(path);
+    }
+    return `/internal${path}`;
+  }
+
+  function getSetting(appInstance, id, fallback) {
+    const settingValue = appInstance?.extensionManager?.setting?.get?.(id);
+    return settingValue ?? fallback;
   }
 
   async function fetchList({ cursor, limit, extensions, recursive, scanDepth }) {
@@ -57,6 +84,23 @@
     return response.json();
   }
 
+  async function fetchInputFiles(appInstance) {
+    const response = await fetch(internalUrl(appInstance, "/files/input"), {
+      headers: (() => {
+        const headers = new Headers();
+        const user = getApi(appInstance)?.user;
+        if (user) {
+          headers.set("Comfy-User", user);
+        }
+        return headers;
+      })(),
+    });
+    if (!response.ok) {
+      throw new Error("Failed to load input files");
+    }
+    return response.json();
+  }
+
   async function deleteAssets(relpaths, mode) {
     const response = await fetch("/assets_plus/output/delete", {
       method: "POST",
@@ -76,9 +120,9 @@
     return { filename, subfolder };
   }
 
-  function buildViewUrl(relpath) {
+  function buildViewUrl(relpath, type) {
     const { filename, subfolder } = getFilenameParts(relpath);
-    const params = new URLSearchParams({ filename, type: "output" });
+    const params = new URLSearchParams({ filename, type });
     if (subfolder) {
       params.set("subfolder", subfolder);
     }
@@ -203,12 +247,33 @@
     }
   }
 
+  function inferMediaType(name) {
+    const lower = name.toLowerCase();
+    if (lower.endsWith(".mp4") || lower.endsWith(".webm")) {
+      return "video";
+    }
+    if (
+      lower.endsWith(".mp3") ||
+      lower.endsWith(".wav") ||
+      lower.endsWith(".ogg") ||
+      lower.endsWith(".flac")
+    ) {
+      return "audio";
+    }
+    return "image";
+  }
+
   function buildGalleryItem(asset) {
     const relpath = asset.id;
-    const url = buildViewUrl(relpath);
+    const type = asset.user_metadata?.source === "input" ? "input" : "output";
+    const url = buildViewUrl(relpath, type);
     const lower = asset.name.toLowerCase();
     const isVideo = lower.endsWith(".mp4") || lower.endsWith(".webm");
-    const isAudio = lower.endsWith(".mp3") || lower.endsWith(".wav") || lower.endsWith(".ogg") || lower.endsWith(".flac");
+    const isAudio =
+      lower.endsWith(".mp3") ||
+      lower.endsWith(".wav") ||
+      lower.endsWith(".ogg") ||
+      lower.endsWith(".flac");
     return {
       url,
       filename: asset.name,
@@ -229,6 +294,71 @@
     };
   }
 
+  function registerSettings(appInstance, defaults) {
+    const settings = appInstance?.ui?.settings;
+    if (!settings?.addSetting) {
+      return;
+    }
+    settings.addSetting({
+      id: SETTINGS.pollSeconds,
+      name: "Assets+ Poll interval (seconds)",
+      category: ["Assets+", "Generated+", "Polling"],
+      tooltip: "Как часто обновлять список Generated+",
+      type: "slider",
+      attrs: { min: 1, max: 60, step: 1 },
+      defaultValue: defaults.poll_seconds ?? DEFAULT_POLL_SECONDS,
+    });
+    settings.addSetting({
+      id: SETTINGS.deleteMode,
+      name: "Assets+ Delete mode",
+      category: ["Assets+", "Generated+", "Deletion"],
+      tooltip: "Режим удаления ассетов в Generated+",
+      type: "combo",
+      options: ["trash", "delete", "hide"],
+      defaultValue: defaults.default_delete_mode ?? "trash",
+    });
+    settings.addSetting({
+      id: SETTINGS.recursive,
+      name: "Assets+ Recursive scan",
+      category: ["Assets+", "Generated+", "Scanning"],
+      tooltip: "Искать ассеты рекурсивно в output",
+      type: "boolean",
+      defaultValue: defaults.recursive ?? true,
+    });
+    settings.addSetting({
+      id: SETTINGS.scanDepth,
+      name: "Assets+ Scan depth",
+      category: ["Assets+", "Generated+", "Scanning"],
+      tooltip: "Максимальная глубина сканирования (-1 = без лимита)",
+      type: "number",
+      defaultValue: Number.isFinite(defaults.scan_depth) ? defaults.scan_depth : -1,
+    });
+    settings.addSetting({
+      id: SETTINGS.listLimit,
+      name: "Assets+ List limit",
+      category: ["Assets+", "Generated+", "Paging"],
+      tooltip: "Сколько элементов загружать за раз",
+      type: "number",
+      defaultValue: defaults.list_limit ?? DEFAULT_PAGE_LIMIT,
+    });
+    settings.addSetting({
+      id: SETTINGS.thumbnailSize,
+      name: "Assets+ Thumbnail size",
+      category: ["Assets+", "Generated+", "Thumbnails"],
+      tooltip: "Размер превью в пикселях",
+      type: "number",
+      defaultValue: defaults.thumbnail_size?.[0] ?? DEFAULT_THUMB_SIZE,
+    });
+    settings.addSetting({
+      id: SETTINGS.extensions,
+      name: "Assets+ Allowed extensions",
+      category: ["Assets+", "Generated+", "Filters"],
+      tooltip: "Список расширений через запятую",
+      type: "string",
+      defaultValue: (defaults.allowed_extensions || []).join(","),
+    });
+  }
+
   function createAssetsPlusComponent(appInstance, vue) {
     const { markRaw, computed, ref, onMounted, onBeforeUnmount, onActivated, onDeactivated, watch } =
       vue;
@@ -237,6 +367,12 @@
     const MediaAssetFilterBar = resolveVueComponent(appInstance, "MediaAssetFilterBar");
     const ResultGallery = resolveVueComponent(appInstance, "ResultGallery");
     const VirtualGrid = resolveVueComponent(appInstance, "VirtualGrid");
+    const SidebarTabTemplate = resolveVueComponent(appInstance, "SidebarTabTemplate");
+    const TabList = resolveVueComponent(appInstance, "TabList");
+    const Tab = resolveVueComponent(appInstance, "Tab");
+    const Button = resolveVueComponent(appInstance, "Button");
+    const ProgressSpinner = resolveVueComponent(appInstance, "ProgressSpinner");
+    const NoResultsPlaceholder = resolveVueComponent(appInstance, "NoResultsPlaceholder");
 
     if (!MediaAssetCard || !MediaAssetFilterBar || !ResultGallery || !VirtualGrid) {
       console.warn(
@@ -245,36 +381,50 @@
     }
 
     const component = {
-      name: "AssetsPlusGeneratedTab",
+      name: "AssetsPlusSidebarTab",
       components: {
         MediaAssetCard: MediaAssetCard ?? undefined,
         MediaAssetFilterBar: MediaAssetFilterBar ?? undefined,
         ResultGallery: ResultGallery ?? undefined,
         VirtualGrid: VirtualGrid ?? undefined,
+        SidebarTabTemplate: SidebarTabTemplate ?? undefined,
+        TabList: TabList ?? undefined,
+        Tab: Tab ?? undefined,
+        Button: Button ?? undefined,
+        ProgressSpinner: ProgressSpinner ?? undefined,
+        NoResultsPlaceholder: NoResultsPlaceholder ?? undefined,
       },
       setup() {
-        const items = ref([]);
-        const isLoading = ref(false);
+        const hasTabs = Boolean(TabList && Tab);
+        const hasNoResultsPlaceholder = Boolean(NoResultsPlaceholder);
+        const activeTab = ref("output");
+        const outputItems = ref([]);
+        const inputItems = ref([]);
+        const isLoadingOutput = ref(false);
+        const isLoadingInput = ref(false);
         const isLoadingMore = ref(false);
-        const hasMore = ref(true);
+        const hasMoreOutput = ref(true);
         const cursor = ref(null);
         const error = ref("");
         const deleteMode = ref("trash");
         const searchQuery = ref("");
         const sortBy = ref("newest");
         const mediaTypeFilters = ref([]);
-        const selectedIds = ref(new Set());
         const openContextMenuId = ref(null);
         const galleryActiveIndex = ref(-1);
-        const scrollContainer = ref(null);
-        const isActive = ref(false);
         const pollSeconds = ref(DEFAULT_POLL_SECONDS);
         const listLimit = ref(DEFAULT_PAGE_LIMIT);
         const extensions = ref(DEFAULT_EXTENSIONS);
         const recursive = ref(true);
         const scanDepth = ref(null);
         const thumbnailSize = ref(DEFAULT_THUMB_SIZE);
+        const outputSelection = ref(new Set());
+        const inputSelection = ref(new Set());
+        const selectedIds = computed(() =>
+          activeTab.value === "output" ? outputSelection.value : inputSelection.value
+        );
         let pollId = null;
+        let settingListenersRegistered = false;
 
         const resolveActiveTabId = () => {
           const manager = appInstance?.extensionManager;
@@ -291,13 +441,14 @@
         };
 
         const setActiveState = (nextActive) => {
-          if (isActive.value === nextActive) {
-            return;
-          }
-          isActive.value = nextActive;
           if (nextActive) {
-            fetchMediaList();
-            startPolling();
+            if (activeTab.value === "output") {
+              fetchOutputList();
+              startPolling();
+            } else {
+              fetchInputList();
+              stopPolling();
+            }
           } else {
             stopPolling();
           }
@@ -318,12 +469,12 @@
           }
         };
 
-        const syncSelection = (nextItems) => {
-          const validIds = new Set(nextItems.map((item) => item.relpath));
+        const syncSelection = (nextItems, selectionRef) => {
+          const validIds = new Set(nextItems.map((item) => item.relpath || item.id));
           const nextSelected = new Set(
-            Array.from(selectedIds.value).filter((id) => validIds.has(id))
+            Array.from(selectionRef.value).filter((id) => validIds.has(id))
           );
-          selectedIds.value = nextSelected;
+          selectionRef.value = nextSelected;
         };
 
         const applyConfig = (config) => {
@@ -362,17 +513,116 @@
           }
         };
 
+        const applySettingOverrides = () => {
+          const rawExtensions = getSetting(
+            appInstance,
+            SETTINGS.extensions,
+            extensions.value.join(",")
+          );
+          if (typeof rawExtensions === "string") {
+            extensions.value = rawExtensions
+              .split(",")
+              .map((ext) => ext.trim())
+              .filter(Boolean)
+              .map((ext) => (ext.startsWith(".") ? ext.slice(1) : ext));
+          }
+          const listLimitValue = Number(getSetting(appInstance, SETTINGS.listLimit, listLimit.value));
+          if (Number.isFinite(listLimitValue) && listLimitValue > 0) {
+            listLimit.value = listLimitValue;
+          }
+          const pollSecondsValue = Number(
+            getSetting(appInstance, SETTINGS.pollSeconds, pollSeconds.value)
+          );
+          if (Number.isFinite(pollSecondsValue) && pollSecondsValue > 0) {
+            pollSeconds.value = pollSecondsValue;
+          }
+          const scanDepthValue = Number(
+            getSetting(appInstance, SETTINGS.scanDepth, scanDepth.value ?? -1)
+          );
+          scanDepth.value = Number.isFinite(scanDepthValue) && scanDepthValue >= 0 ? scanDepthValue : null;
+          const recursiveValue = getSetting(appInstance, SETTINGS.recursive, recursive.value);
+          if (typeof recursiveValue === "boolean") {
+            recursive.value = recursiveValue;
+          }
+          const deleteModeValue = getSetting(appInstance, SETTINGS.deleteMode, deleteMode.value);
+          if (typeof deleteModeValue === "string") {
+            deleteMode.value = deleteModeValue;
+          }
+          const thumbValue = Number(
+            getSetting(appInstance, SETTINGS.thumbnailSize, thumbnailSize.value)
+          );
+          if (Number.isFinite(thumbValue) && thumbValue > 0) {
+            thumbnailSize.value = thumbValue;
+          }
+        };
+
         const refreshConfig = async () => {
           try {
             const config = await fetchConfig();
             applyConfig(config);
+            applySettingOverrides();
           } catch (err) {
             console.warn("Assets+: failed to load config", err);
           }
         };
 
-        const fetchMediaList = async () => {
-          isLoading.value = true;
+        const registerSettingListeners = () => {
+          if (settingListenersRegistered) {
+            return;
+          }
+          const settings = appInstance?.ui?.settings;
+          if (!settings?.addEventListener) {
+            return;
+          }
+          settings.addEventListener(`${SETTINGS.pollSeconds}.change`, (event) => {
+            const value = Number(event?.detail?.value);
+            if (Number.isFinite(value) && value > 0) {
+              pollSeconds.value = value;
+            }
+          });
+          settings.addEventListener(`${SETTINGS.deleteMode}.change`, (event) => {
+            const value = event?.detail?.value;
+            if (typeof value === "string") {
+              deleteMode.value = value;
+            }
+          });
+          settings.addEventListener(`${SETTINGS.recursive}.change`, (event) => {
+            const value = event?.detail?.value;
+            if (typeof value === "boolean") {
+              recursive.value = value;
+            }
+          });
+          settings.addEventListener(`${SETTINGS.scanDepth}.change`, (event) => {
+            const value = Number(event?.detail?.value);
+            scanDepth.value = Number.isFinite(value) && value >= 0 ? value : null;
+          });
+          settings.addEventListener(`${SETTINGS.listLimit}.change`, (event) => {
+            const value = Number(event?.detail?.value);
+            if (Number.isFinite(value) && value > 0) {
+              listLimit.value = value;
+            }
+          });
+          settings.addEventListener(`${SETTINGS.thumbnailSize}.change`, (event) => {
+            const value = Number(event?.detail?.value);
+            if (Number.isFinite(value) && value > 0) {
+              thumbnailSize.value = value;
+            }
+          });
+          settings.addEventListener(`${SETTINGS.extensions}.change`, (event) => {
+            const value = event?.detail?.value;
+            if (typeof value === "string") {
+              extensions.value = value
+                .split(",")
+                .map((ext) => ext.trim())
+                .filter(Boolean)
+                .map((ext) => (ext.startsWith(".") ? ext.slice(1) : ext));
+            }
+          });
+          settingListenersRegistered = true;
+        };
+
+        const fetchOutputList = async () => {
+          isLoadingOutput.value = true;
           error.value = "";
           try {
             const data = await fetchList({
@@ -381,20 +631,53 @@
               recursive: recursive.value,
               scanDepth: scanDepth.value,
             });
-            items.value = data.items || [];
+            outputItems.value = data.items || [];
             cursor.value = data.cursor ?? null;
-            hasMore.value = Boolean(cursor.value) && (data.items?.length ?? 0) >= listLimit.value;
-            syncSelection(items.value);
+            hasMoreOutput.value = Boolean(cursor.value) && (data.items?.length ?? 0) >= listLimit.value;
+            syncSelection(outputItems.value, outputSelection);
           } catch (err) {
             console.error(err);
             error.value = "Не удалось загрузить ассеты.";
           } finally {
-            isLoading.value = false;
+            isLoadingOutput.value = false;
+          }
+        };
+
+        const fetchInputList = async () => {
+          isLoadingInput.value = true;
+          error.value = "";
+          try {
+            const data = await fetchInputFiles(appInstance);
+            inputItems.value = (Array.isArray(data) ? data : []).map((relpath) => ({
+              relpath,
+              filename: relpath.split("/").pop() ?? relpath,
+              mtime: 0,
+              size: 0,
+              type: inferMediaType(relpath),
+              has_workflow: false,
+            }));
+            syncSelection(inputItems.value, inputSelection);
+          } catch (err) {
+            console.error(err);
+            error.value = "Не удалось загрузить импортированные ассеты.";
+          } finally {
+            isLoadingInput.value = false;
+          }
+        };
+
+        const refreshActiveTab = async () => {
+          if (activeTab.value === "output") {
+            await fetchOutputList();
+          } else {
+            await fetchInputList();
           }
         };
 
         const loadMore = async () => {
-          if (isLoadingMore.value || !hasMore.value) {
+          if (activeTab.value !== "output") {
+            return;
+          }
+          if (isLoadingMore.value || !hasMoreOutput.value) {
             return;
           }
           isLoadingMore.value = true;
@@ -407,10 +690,10 @@
               scanDepth: scanDepth.value,
             });
             const nextItems = data.items || [];
-            items.value = items.value.concat(nextItems);
+            outputItems.value = outputItems.value.concat(nextItems);
             cursor.value = data.cursor ?? null;
-            hasMore.value = Boolean(cursor.value) && nextItems.length >= listLimit.value;
-            syncSelection(items.value);
+            hasMoreOutput.value = Boolean(cursor.value) && nextItems.length >= listLimit.value;
+            syncSelection(outputItems.value, outputSelection);
           } catch (err) {
             console.error(err);
             showToast(appInstance, {
@@ -428,19 +711,19 @@
           if (!nextItems.length) {
             return;
           }
-          const existing = new Set(items.value.map((item) => item.relpath));
+          const existing = new Set(outputItems.value.map((item) => item.relpath));
           const uniqueNew = nextItems.filter((item) => !existing.has(item.relpath));
           if (uniqueNew.length) {
-            items.value = uniqueNew.concat(items.value);
+            outputItems.value = uniqueNew.concat(outputItems.value);
           }
         };
 
         const pollForUpdates = async () => {
-          if (!isActive.value) {
+          if (activeTab.value !== "output") {
             return;
           }
           if (!cursor.value) {
-            await fetchMediaList();
+            await fetchOutputList();
             return;
           }
           try {
@@ -454,32 +737,39 @@
             const nextItems = data.items || [];
             mergeNewItems(nextItems);
             cursor.value = data.cursor ?? cursor.value;
-            syncSelection(items.value);
+            syncSelection(outputItems.value, outputSelection);
           } catch (err) {
             console.error(err);
           }
         };
 
-        const assets = computed(() =>
-          (items.value || []).map((item) => {
+        const assets = computed(() => {
+          const source = activeTab.value === "output" ? "output" : "input";
+          const list = source === "output" ? outputItems.value : inputItems.value;
+          return (list || []).map((item) => {
             const relpath = item.relpath;
+            const previewUrl =
+              source === "output"
+                ? buildThumbUrl(relpath, thumbnailSize.value)
+                : buildViewUrl(relpath, "input");
             return {
               id: relpath,
               name: relpath,
               size: item.size || 0,
-              created_at: new Date(item.mtime * 1000).toISOString(),
-              tags: ["output"],
-              preview_url: buildThumbUrl(relpath, thumbnailSize.value),
+              created_at: item.mtime ? new Date(item.mtime * 1000).toISOString() : new Date().toISOString(),
+              tags: [source],
+              preview_url: previewUrl,
               user_metadata: {
                 relpath,
                 mtime: item.mtime,
                 size: item.size,
                 type: item.type,
                 has_workflow: item.has_workflow,
+                source,
               },
             };
-          })
-        );
+          });
+        });
 
         const filteredAssets = computed(() => {
           const query = searchQuery.value.trim().toLowerCase();
@@ -543,7 +833,7 @@
         };
 
         const refreshWorkflowAvailability = async (asset) => {
-          if (!asset) {
+          if (!asset || asset.user_metadata?.source !== "output") {
             selectedWorkflowAvailable.value = false;
             return;
           }
@@ -574,17 +864,19 @@
         const isSelected = (assetId) => selectedIds.value.has(assetId);
 
         const toggleSelection = (asset) => {
-          const next = new Set(selectedIds.value);
+          const selectionRef = activeTab.value === "output" ? outputSelection : inputSelection;
+          const next = new Set(selectionRef.value);
           if (next.has(asset.id)) {
             next.delete(asset.id);
           } else {
             next.add(asset.id);
           }
-          selectedIds.value = next;
+          selectionRef.value = next;
         };
 
         const clearSelection = () => {
-          selectedIds.value = new Set();
+          outputSelection.value = new Set();
+          inputSelection.value = new Set();
         };
 
         const handleAssetSelect = (asset) => {
@@ -630,6 +922,9 @@
         };
 
         const handleDeleteSelected = async () => {
+          if (activeTab.value !== "output") {
+            return;
+          }
           const confirmed = await confirmDeleteSelected();
           if (!confirmed) {
             return;
@@ -638,9 +933,9 @@
             const relpaths = selectedAssets.value.map((asset) => asset.id);
             const mode = deleteMode.value;
             await deleteAssets(relpaths, mode);
-            items.value = items.value.filter((item) => !relpaths.includes(item.relpath));
+            outputItems.value = outputItems.value.filter((item) => !relpaths.includes(item.relpath));
             clearSelection();
-            await fetchMediaList();
+            await fetchOutputList();
           } catch (err) {
             console.error(err);
             showToast(appInstance, {
@@ -665,12 +960,13 @@
 
         const handleDownloadSelected = () => {
           selectedAssets.value.forEach((asset) => {
-            triggerDownload(buildViewUrl(asset.id), asset.name);
+            const type = asset.user_metadata?.source === "input" ? "input" : "output";
+            triggerDownload(buildViewUrl(asset.id, type), asset.name);
           });
         };
 
         const openWorkflow = async (replaceCurrent) => {
-          if (!hasSingleSelection.value) {
+          if (!hasSingleSelection.value || activeTab.value !== "output") {
             return;
           }
           const asset = selectedAssets.value[0];
@@ -742,19 +1038,15 @@
           }
         };
 
-        const handleScroll = () => {
-          const container = scrollContainer.value;
-          if (!container || isLoadingMore.value || !hasMore.value) {
-            return;
-          }
-          const threshold = 200;
-          if (container.scrollTop + container.clientHeight >= container.scrollHeight - threshold) {
-            loadMore();
+        const handleApproachEnd = async () => {
+          if (activeTab.value === "output") {
+            await loadMore();
           }
         };
 
         onMounted(async () => {
           await refreshConfig();
+          registerSettingListeners();
           const activeId = resolveActiveTabId();
           const shouldAssumeActive = activeId === null;
           setActiveState(shouldAssumeActive || activeId === SIDEBAR_TAB_ID);
@@ -785,9 +1077,22 @@
         watch(
           () => pollSeconds.value,
           () => {
-            if (isActive.value) {
+            if (activeTab.value === "output") {
               stopPolling();
               startPolling();
+            }
+          }
+        );
+
+        watch(
+          () => activeTab.value,
+          async (nextTab) => {
+            if (nextTab === "output") {
+              await fetchOutputList();
+              startPolling();
+            } else {
+              stopPolling();
+              await fetchInputList();
             }
           }
         );
@@ -804,10 +1109,13 @@
         );
 
         return {
-          items,
-          isLoading,
+          hasTabs,
+          hasNoResultsPlaceholder,
+          activeTab,
+          isLoadingOutput,
+          isLoadingInput,
           isLoadingMore,
-          hasMore,
+          hasMoreOutput,
           error,
           deleteMode,
           searchQuery,
@@ -822,8 +1130,8 @@
           hasSingleSelection,
           selectedAssetHasWorkflow,
           totalOutputCount,
-          fetchMediaList,
-          loadMore,
+          refreshActiveTab,
+          handleApproachEnd,
           handleAssetSelect,
           handleZoomClick,
           handleEmptySpaceClick,
@@ -831,24 +1139,36 @@
           handleDownloadSelected,
           openWorkflow,
           isSelected,
-          scrollContainer,
-          handleScroll,
         };
       },
       template: `
-        <div class="flex h-full flex-col">
-          <div class="flex items-center justify-between gap-2 px-2 pb-2 2xl:px-4">
-            <div class="text-sm font-semibold">Generated+</div>
+        <SidebarTabTemplate :title="$t('sideToolbar.mediaAssets.title')">
+          <template #tool-buttons>
             <div class="flex items-center gap-2">
+              <TabList v-if="hasTabs" v-model="activeTab">
+                <Tab class="font-inter" value="output">Generated+</Tab>
+                <Tab class="font-inter" value="input">Imported</Tab>
+              </TabList>
               <button
                 class="rounded-md border border-transparent bg-secondary-background px-3 py-1 text-xs"
                 type="button"
-                @click="fetchMediaList"
-                :disabled="isLoading"
+                @click="refreshActiveTab"
+                :disabled="activeTab === 'output' ? isLoadingOutput : isLoadingInput"
               >
                 Refresh
               </button>
+            </div>
+          </template>
+          <template #header>
+            <div class="flex items-center justify-between gap-2 px-2 pb-2 2xl:px-4">
+              <MediaAssetFilterBar
+                v-model:search-query="searchQuery"
+                v-model:sort-by="sortBy"
+                v-model:media-type-filters="mediaTypeFilters"
+                :show-generation-time-sort="activeTab === 'output'"
+              />
               <select
+                v-if="activeTab === 'output'"
                 class="rounded-md border border-secondary-border bg-transparent px-2 py-1 text-xs"
                 v-model="deleteMode"
               >
@@ -857,106 +1177,106 @@
                 <option value="hide">Hide Only</option>
               </select>
             </div>
-          </div>
-
-          <MediaAssetFilterBar
-            v-model:search-query="searchQuery"
-            v-model:sort-by="sortBy"
-            v-model:media-type-filters="mediaTypeFilters"
-            class="px-2 pb-2 2xl:px-4"
-            :show-generation-time-sort="false"
-          />
-
-          <div class="border-b border-secondary-border" />
-
-          <div
-            class="relative flex-1 overflow-y-auto"
-            ref="scrollContainer"
-            @click="handleEmptySpaceClick"
-            @scroll="handleScroll"
-          >
-            <div v-if="error" class="px-4 py-3 text-sm text-red-400">{{ error }}</div>
-            <div v-else-if="!displayAssets.length && !isLoading" class="px-4 py-3 text-sm text-muted-foreground">
-              Нет ассетов.
+            <div class="border-b border-secondary-border" />
+          </template>
+          <template #body>
+            <div v-if="(activeTab === 'output' ? isLoadingOutput : isLoadingInput) && !displayAssets.length">
+              <ProgressSpinner class="absolute left-1/2 w-[50px] -translate-x-1/2" />
             </div>
-            <VirtualGrid
-              v-else
-              :items="mediaAssetsWithKey"
-              :grid-style="{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
-                padding: '0 0.5rem',
-                gap: '0.5rem'
-              }"
+            <div
+              v-else-if="!displayAssets.length && !(activeTab === 'output' ? isLoadingOutput : isLoadingInput)"
+              class="px-4 py-3 text-sm text-muted-foreground"
             >
-              <template #item="{ item }">
-                <div data-asset-card>
-                  <MediaAssetCard
-                    :asset="item"
-                    :selected="isSelected(item.id)"
-                    :show-output-count="false"
-                    :show-delete-button="false"
-                    :open-context-menu-id="openContextMenuId"
-                    @click="handleAssetSelect(item)"
-                    @zoom="handleZoomClick(item)"
-                    @context-menu-opened="openContextMenuId = item.id"
-                  />
-                </div>
-              </template>
-            </VirtualGrid>
-            <div v-if="isLoadingMore" class="px-4 py-3 text-xs text-muted-foreground">
-              Загружаем ещё...
+              <NoResultsPlaceholder
+                v-if="hasNoResultsPlaceholder"
+                icon="pi pi-info-circle"
+                :title="activeTab === 'input' ? 'Нет импортированных файлов.' : 'Нет сгенерированных файлов.'"
+                message="Файлы не найдены."
+              />
+              <span v-else>Нет ассетов.</span>
             </div>
-          </div>
+            <div v-else class="relative size-full" @click="handleEmptySpaceClick">
+              <VirtualGrid
+                :items="mediaAssetsWithKey"
+                :grid-style="{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+                  padding: '0 0.5rem',
+                  gap: '0.5rem'
+                }"
+                @approach-end="handleApproachEnd"
+              >
+                <template #item="{ item }">
+                  <div data-asset-card>
+                    <MediaAssetCard
+                      :asset="item"
+                      :selected="isSelected(item.id)"
+                      :show-output-count="false"
+                      :show-delete-button="false"
+                      :open-context-menu-id="openContextMenuId"
+                      @click="handleAssetSelect(item)"
+                      @zoom="handleZoomClick(item)"
+                      @context-menu-opened="openContextMenuId = item.id"
+                    />
+                  </div>
+                </template>
+              </VirtualGrid>
+              <div v-if="isLoadingMore" class="px-4 py-3 text-xs text-muted-foreground">
+                Загружаем ещё...
+              </div>
+            </div>
+          </template>
+          <template #footer>
+            <div
+              v-if="hasSelection"
+              class="flex h-18 items-center justify-between gap-2 border-t border-secondary-border px-4"
+            >
+              <div class="text-sm text-muted-foreground">
+                Выбрано: {{ totalOutputCount }}
+              </div>
+              <div class="flex flex-wrap gap-2">
+                <button
+                  class="rounded-md border border-secondary-border bg-secondary-background px-3 py-1 text-xs"
+                  type="button"
+                  @click="handleDownloadSelected"
+                >
+                  Скачать
+                </button>
+                <button
+                  v-if="activeTab === 'output'"
+                  class="rounded-md border border-secondary-border bg-secondary-background px-3 py-1 text-xs"
+                  type="button"
+                  @click="handleDeleteSelected"
+                >
+                  Удалить
+                </button>
+                <button
+                  v-if="activeTab === 'output' && hasSingleSelection"
+                  class="rounded-md border border-secondary-border bg-secondary-background px-3 py-1 text-xs"
+                  type="button"
+                  :disabled="!selectedAssetHasWorkflow"
+                  @click="openWorkflow(false)"
+                >
+                  Open workflow (new tab)
+                </button>
+                <button
+                  v-if="activeTab === 'output' && hasSingleSelection"
+                  class="rounded-md border border-secondary-border bg-secondary-background px-3 py-1 text-xs"
+                  type="button"
+                  :disabled="!selectedAssetHasWorkflow"
+                  @click="openWorkflow(true)"
+                >
+                  Replace current workflow
+                </button>
+              </div>
+            </div>
+          </template>
+        </SidebarTabTemplate>
 
-          <div
-            v-if="hasSelection"
-            class="flex h-18 items-center justify-between gap-2 border-t border-secondary-border px-4"
-          >
-            <div class="text-sm text-muted-foreground">
-              Выбрано: {{ totalOutputCount }}
-            </div>
-            <div class="flex flex-wrap gap-2">
-              <button
-                class="rounded-md border border-secondary-border bg-secondary-background px-3 py-1 text-xs"
-                type="button"
-                @click="handleDownloadSelected"
-              >
-                Скачать
-              </button>
-              <button
-                class="rounded-md border border-secondary-border bg-secondary-background px-3 py-1 text-xs"
-                type="button"
-                @click="handleDeleteSelected"
-              >
-                Удалить
-              </button>
-              <button
-                v-if="hasSingleSelection"
-                class="rounded-md border border-secondary-border bg-secondary-background px-3 py-1 text-xs"
-                type="button"
-                :disabled="!selectedAssetHasWorkflow"
-                @click="openWorkflow(false)"
-              >
-                Open workflow (new tab)
-              </button>
-              <button
-                v-if="hasSingleSelection"
-                class="rounded-md border border-secondary-border bg-secondary-background px-3 py-1 text-xs"
-                type="button"
-                :disabled="!selectedAssetHasWorkflow"
-                @click="openWorkflow(true)"
-              >
-                Replace current workflow
-              </button>
-            </div>
-          </div>
-
-          <ResultGallery
-            v-model:active-index="galleryActiveIndex"
-            :all-gallery-items="galleryItems"
-          />
-        </div>
+        <ResultGallery
+          v-model:active-index="galleryActiveIndex"
+          :all-gallery-items="galleryItems"
+        />
       `,
     };
 
@@ -971,8 +1291,8 @@
     }
 
     app.registerExtension({
-      name: "assets_plus",
-      setup(appInstance) {
+      name: EXTENSION_NAME,
+      async setup(appInstance) {
         const vue = getVue();
         if (!vue?.markRaw) {
           console.warn("Assets+: Vue is not available, sidebar tab not registered.");
@@ -983,12 +1303,24 @@
           return;
         }
 
+        try {
+          const config = await fetchConfig();
+          registerSettings(appInstance, config);
+        } catch (error) {
+          registerSettings(appInstance, {});
+        }
+
         const component = createAssetsPlusComponent(appInstance, vue);
+        if (appInstance.extensionManager.unregisterSidebarTab) {
+          appInstance.extensionManager.unregisterSidebarTab("assets");
+        }
+
         appInstance.extensionManager.registerSidebarTab({
-          id: "assets-plus-generated",
-          icon: "mdi-image-multiple",
-          title: "Generated+",
-          label: "Generated+",
+          id: "assets",
+          icon: "icon-[comfy--image-ai-edit]",
+          title: "sideToolbar.assets",
+          tooltip: "sideToolbar.assets",
+          label: "sideToolbar.labels.assets",
           component,
           type: "vue",
         });

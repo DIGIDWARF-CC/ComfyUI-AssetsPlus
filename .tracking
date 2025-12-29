@@ -1,0 +1,12 @@
+.gitignore
+LICENSE
+README.md
+__init__.py
+assets_plus/__init__.py
+assets_plus/api.py
+assets_plus/config.py
+assets_plus/storage.py
+meta/img/logo.png
+meta/img/logo_1024x700.png
+pyproject.toml
+web/assets_plus.js
