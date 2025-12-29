@@ -1,4 +1,7 @@
 # Assets+
+<p align="center">
+  <img src="/meta/img/logo_1024x700.png" alt="ai-generated assets-plus logo" width="600"/>
+</p>
 
 Assets+ is an extension for ComfyUI that adds a **Generated+** tab and provides a
 persistent overview of the output directory via the `/assets_plus` API.
