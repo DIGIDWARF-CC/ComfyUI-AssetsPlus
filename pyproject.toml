@@ -1,0 +1,13 @@
+[project]
+name = "ComfyUI-AssetsPlus"
+description = "Adds a **Generated+** tab to the Assets panel and provides a persistent overview of the output directory"
+version = "0.0.1"
+
+[project.urls]
+Repository = "https://github.com/DIGIDWARF-CC/ComfyUI-AssetsPlus"
+Website = "https://digidwarf.art"
+
+[tool.comfy]
+PublisherId = "DIGIDWARF"
+DisplayName = "ComfyUI-AssetsPlus"
+Icon = ""
