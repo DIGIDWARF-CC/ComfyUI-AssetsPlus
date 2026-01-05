@@ -1,14 +1,20 @@
 [project]
 name = "ComfyUI-AssetsPlus"
-description = "Adds a **Generated+** tab to the Assets panel and provides a persistent overview of the output directory"
+description = "Adds 'Assets+' tool to ComfyUI sidebar, which builds upon 'Media Assets' idea albeit expands it to bring Gallery-like experience to Windows machines"
 version = "0.2.1"
-license = {file = "LICENSE"}
+license = {file = "LICENSE"} 
+classifiers = [
+    "Operating System :: Microsoft :: Windows"
+]
 
 [project.urls]
 Repository = "https://github.com/DIGIDWARF-CC/ComfyUI-AssetsPlus"
-Website = "https://digidwarf.art"
+#  Used by Comfy Registry https://registry.comfy.org
+Documentation = "https://github.com/DIGIDWARF-CC/ComfyUI-AssetsPlus/wiki"
+"Bug Tracker" = "https://github.com/DIGIDWARF-CC/ComfyUI-AssetsPlus/issues"
 
 [tool.comfy]
 PublisherId = "digidwarf"
-DisplayName = "digidwarf.AssetsPlus"
+DisplayName = "ComfyUI-AssetsPlus"
 Icon = "https://raw.githubusercontent.com/DIGIDWARF-CC/ComfyUI-AssetsPlus/refs/heads/main/meta/img/logo_1024x700.png"
+includes = [] 
