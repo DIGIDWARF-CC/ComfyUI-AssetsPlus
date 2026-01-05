@@ -1,7 +1,7 @@
 [project]
 name = "ComfyUI-AssetsPlus"
 description = "Adds a **Generated+** tab to the Assets panel and provides a persistent overview of the output directory"
-version = "0.0.1"
+version = "0.2.1"
 license = {file = "LICENSE"}
 
 [project.urls]
