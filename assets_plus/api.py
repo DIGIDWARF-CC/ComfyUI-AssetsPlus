@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -23,10 +24,35 @@ if SEND2TRASH_AVAILABLE:
     import send2trash
 
 LOGGER = logging.getLogger("assets_plus")
+LANGUAGE_CODE_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def get_output_directory() -> Path:
     return Path(folder_paths.get_output_directory())
+
+
+def get_input_directory() -> Path:
+    return Path(folder_paths.get_input_directory())
+
+
+def get_extension_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def get_i18n_directory() -> Path:
+    return get_extension_root() / "i18n"
+
+
+def load_translation_file(path: Path) -> dict[str, Any]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        LOGGER.warning("Assets+ failed to load translation %s: %s", path.name, error)
+        return {}
+    if not isinstance(raw, dict):
+        LOGGER.warning("Assets+ translation %s is not a JSON object", path.name)
+        return {}
+    return raw
 
 
 def is_within(base: Path, path: Path) -> bool:
@@ -42,12 +68,11 @@ def is_within(base: Path, path: Path) -> bool:
         return False
 
 
-def resolve_relpath(relpath: str) -> Path:
+def resolve_relpath(relpath: str, base_dir: Path) -> Path:
     if os.path.isabs(relpath):
         raise web.HTTPBadRequest(text="Absolute paths are not allowed")
-    output_dir = get_output_directory()
-    candidate = output_dir / relpath
-    if not is_within(output_dir, candidate):
+    candidate = base_dir / relpath
+    if not is_within(base_dir, candidate):
         raise web.HTTPBadRequest(text="Path traversal detected")
     return candidate
 
@@ -73,18 +98,19 @@ def iter_output_files(output_dir: Path, recursive: bool, scan_depth: int | None)
     return files
 
 
-def list_output_items(
-    output_dir: Path,
+def list_directory_items(
+    base_dir: Path,
     extensions: tuple[str, ...],
     recursive: bool,
     scan_depth: int | None,
+    hidden: dict[str, HiddenEntry] | None = None,
 ) -> list[dict[str, Any]]:
-    hidden = load_hidden()
+    hidden = hidden or {}
     items: list[dict[str, Any]] = []
-    for path in iter_output_files(output_dir, recursive, scan_depth):
+    for path in iter_output_files(base_dir, recursive, scan_depth):
         if not path.is_file():
             continue
-        relpath = path.relative_to(output_dir).as_posix()
+        relpath = path.relative_to(base_dir).as_posix()
         if not allowed_extension(path.name, extensions):
             continue
         stat = path.stat()
@@ -138,6 +164,7 @@ def build_thumb_cache_key(relpath: str, mtime: int, size: int, width: int, heigh
 async def output_list(request: web.Request) -> web.Response:
     config = load_config()
     params = request.rel_url.query
+    LOGGER.info("Assets+ output list request params=%s", dict(params))
     extensions_param = params.get("extensions")
     if extensions_param:
         extensions = tuple(
@@ -161,7 +188,49 @@ async def output_list(request: web.Request) -> web.Response:
     cursor = params.get("cursor")
 
     output_dir = get_output_directory()
-    items = list_output_items(output_dir, extensions, recursive, scan_depth)
+    hidden = load_hidden()
+    items = list_directory_items(output_dir, extensions, recursive, scan_depth, hidden=hidden)
+    if cursor:
+        try:
+            cursor_value = int(cursor)
+        except ValueError:
+            cursor_value = 0
+        items = [item for item in items if item["mtime"] > cursor_value]
+    if limit:
+        items = items[:limit]
+    next_cursor = str(items[0]["mtime"]) if items else cursor or "0"
+    return web.json_response({"items": items, "cursor": next_cursor})
+
+
+@PromptServer.instance.routes.get("/assets_plus/input/list")
+async def input_list(request: web.Request) -> web.Response:
+    config = load_config()
+    params = request.rel_url.query
+    LOGGER.info("Assets+ input list request params=%s", dict(params))
+    extensions_param = params.get("extensions")
+    if extensions_param:
+        extensions = tuple(
+            ext if ext.startswith(".") else f".{ext}" for ext in extensions_param.split(",") if ext
+        )
+    else:
+        extensions = config.allowed_extensions
+    scan_depth_param = params.get("scan_depth")
+    scan_depth = None
+    if scan_depth_param is not None:
+        try:
+            scan_depth = int(scan_depth_param)
+        except ValueError:
+            scan_depth = config.scan_depth
+    else:
+        scan_depth = config.scan_depth
+    if scan_depth is not None and scan_depth < 0:
+        scan_depth = None
+    recursive = params.get("recursive", "1") not in {"0", "false", "False"}
+    limit = int(params.get("limit", config.list_limit))
+    cursor = params.get("cursor")
+
+    input_dir = get_input_directory()
+    items = list_directory_items(input_dir, extensions, recursive, scan_depth)
     if cursor:
         try:
             cursor_value = int(cursor)
@@ -199,7 +268,40 @@ async def output_thumb(request: web.Request) -> web.StreamResponse:
         raise web.HTTPBadRequest(text="relpath is required")
     width = int(params.get("w", config.thumbnail_size[0]))
     height = int(params.get("h", config.thumbnail_size[1]))
-    path = resolve_relpath(relpath)
+    path = resolve_relpath(relpath, get_output_directory())
+    if not path.exists():
+        raise web.HTTPNotFound(text="Asset not found")
+
+    if path.suffix.lower() in {".mp4", ".webm"}:
+        return web.FileResponse(path=path)
+
+    stat = path.stat()
+    cache_key = build_thumb_cache_key(relpath, int(stat.st_mtime), stat.st_size, width, height)
+    cache_path = thumb_cache_dir() / f"{cache_key}.png"
+
+    if cache_path.exists():
+        return web.FileResponse(path=cache_path)
+
+    try:
+        with Image.open(path) as image:
+            image.thumbnail((width, height))
+            image.save(cache_path, format="PNG")
+    except OSError:
+        raise web.HTTPUnsupportedMediaType(text="Unsupported image")
+
+    return web.FileResponse(path=cache_path)
+
+
+@PromptServer.instance.routes.get("/assets_plus/input/thumb")
+async def input_thumb(request: web.Request) -> web.StreamResponse:
+    config = load_config()
+    params = request.rel_url.query
+    relpath = params.get("relpath")
+    if not relpath:
+        raise web.HTTPBadRequest(text="relpath is required")
+    width = int(params.get("w", config.thumbnail_size[0]))
+    height = int(params.get("h", config.thumbnail_size[1]))
+    path = resolve_relpath(relpath, get_input_directory())
     if not path.exists():
         raise web.HTTPNotFound(text="Asset not found")
 
@@ -229,7 +331,20 @@ async def output_meta(request: web.Request) -> web.Response:
     relpath = params.get("relpath")
     if not relpath:
         raise web.HTTPBadRequest(text="relpath is required")
-    path = resolve_relpath(relpath)
+    path = resolve_relpath(relpath, get_output_directory())
+    if not path.exists():
+        raise web.HTTPNotFound(text="Asset not found")
+    metadata = read_metadata(path)
+    return web.json_response({"relpath": relpath, "metadata": metadata})
+
+
+@PromptServer.instance.routes.get("/assets_plus/input/meta")
+async def input_meta(request: web.Request) -> web.Response:
+    params = request.rel_url.query
+    relpath = params.get("relpath")
+    if not relpath:
+        raise web.HTTPBadRequest(text="relpath is required")
+    path = resolve_relpath(relpath, get_input_directory())
     if not path.exists():
         raise web.HTTPNotFound(text="Asset not found")
     metadata = read_metadata(path)
@@ -251,7 +366,7 @@ async def output_delete(request: web.Request) -> web.Response:
 
     for relpath in relpaths:
         try:
-            path = resolve_relpath(relpath)
+            path = resolve_relpath(relpath, get_output_directory())
         except web.HTTPError:
             failed.append(relpath)
             continue
@@ -276,3 +391,31 @@ async def output_delete(request: web.Request) -> web.Response:
     save_hidden(hidden)
     LOGGER.info("Assets+ delete mode=%s removed=%s failed=%s", mode, removed, failed)
     return web.json_response({"removed": removed, "failed": failed, "mode": mode})
+
+
+@PromptServer.instance.routes.get("/assets_plus/i18n")
+async def assets_plus_i18n(request: web.Request) -> web.Response:
+    params = request.rel_url.query
+    lang = params.get("lang")
+    i18n_dir = get_i18n_directory()
+    if lang:
+        if not LANGUAGE_CODE_RE.match(lang):
+            raise web.HTTPBadRequest(text="Invalid language code")
+        translation_path = i18n_dir / f"{lang}.json"
+        if not translation_path.exists():
+            raise web.HTTPNotFound(text="Translation not found")
+        return web.json_response(load_translation_file(translation_path))
+
+    translations: list[dict[str, str]] = []
+    if i18n_dir.exists():
+        for path in sorted(i18n_dir.glob("*.json")):
+            code = path.stem
+            data = load_translation_file(path)
+            translations.append(
+                {
+                    "code": code,
+                    "translation-name": str(data.get("translation-name", code)),
+                    "translation-author": str(data.get("translation-author", "")),
+                }
+            )
+    return web.json_response({"translations": translations})

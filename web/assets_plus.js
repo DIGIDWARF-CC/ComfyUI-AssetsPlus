@@ -1,1332 +1,996 @@
-(() => {
-  const EXTENSION_NAME = "digidwarf.AssetsPlus";
-  const DEFAULT_POLL_SECONDS = 5;
-  const DEFAULT_THUMB_SIZE = 256;
-  const DEFAULT_PAGE_LIMIT = 200;
-  const DEFAULT_EXTENSIONS = ["png", "jpg", "jpeg", "webp", "mp4", "webm"];
-  const SIDEBAR_TAB_ID = "assets";
-  const SETTINGS = {
-    pollSeconds: "AssetsPlus.PollSeconds",
-    deleteMode: "AssetsPlus.DeleteMode",
-    recursive: "AssetsPlus.Recursive",
-    scanDepth: "AssetsPlus.ScanDepth",
-    listLimit: "AssetsPlus.ListLimit",
-    thumbnailSize: "AssetsPlus.ThumbnailSize",
-    extensions: "AssetsPlus.AllowedExtensions",
-  };
+import { app as importedApp } from "../../scripts/app.js";
+import { api } from "../../scripts/api.js";
 
-  function getVue() {
-    return window.Vue ?? window.comfyVue ?? null;
-  }
+const EXTENSION_NAME = "digidwarf.AssetsPlus";
+const SIDEBAR_TAB_ID = "assets-plus-explorer";
+const OUTPUT_TAB = "output";
+const INPUT_TAB = "input";
 
-  function getApp() {
-    return window.app ?? window.comfyApp ?? window.comfy?.app ?? null;
-  }
+const DEFAULT_EXTENSIONS = ["png", "jpg", "jpeg", "webp", "mp4", "webm"];
+const DEFAULT_POLL_SECONDS = 5;
+const DEFAULT_LIST_LIMIT = 200;
+const DEFAULT_THUMB_SIZE = 256;
+const DEFAULT_DELETE_MODE = "trash";
+const DEFAULT_LANGUAGE = "en";
+const SETTINGS_CATEGORY = "Assets+";
 
-  function getVueApp() {
-    const root = document.getElementById("vue-app");
-    return root?.__vue_app__ ?? null;
-  }
+const SETTINGS = {
+  pollSeconds: "AssetsPlus.PollSeconds",
+  listLimit: "AssetsPlus.ListLimit",
+  recursive: "AssetsPlus.RecursiveScan",
+  scanDepth: "AssetsPlus.ScanDepth",
+  deleteMode: "AssetsPlus.DeleteMode",
+  thumbnailSize: "AssetsPlus.ThumbnailSize",
+  language: "AssetsPlus.Language",
+};
 
-  function getApi(appInstance) {
-    return appInstance?.api ?? window.api ?? window.comfyApi ?? null;
-  }
+const applySettingsCategory = (setting, groupLabel) => ({
+  ...setting,
+  category: [SETTINGS_CATEGORY, groupLabel, setting.id],
+});
 
-  function internalUrl(appInstance, path) {
-    const api = getApi(appInstance);
-    if (api?.internalURL) {
-      return api.internalURL(path);
+const log = (...args) => console.log("[Assets+ Explorer]", ...args);
+const warn = (...args) => console.warn("[Assets+ Explorer]", ...args);
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const resolveApp = () => window.app || window.comfyApp || window.comfy?.app || importedApp;
+
+let activeTranslations = {};
+let fallbackTranslations = {};
+let activeLanguage = DEFAULT_LANGUAGE;
+let explorerInstance = null;
+
+const t = (key, vars = {}) => {
+  const template = activeTranslations?.[key] ?? fallbackTranslations?.[key] ?? key;
+  if (typeof template !== "string") return String(template);
+  return template.replace(/\{(\w+)\}/g, (match, name) =>
+    Object.prototype.hasOwnProperty.call(vars, name) ? String(vars[name]) : match
+  );
+};
+
+const waitForApp = async () => {
+  const maxAttempts = 200;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const appInstance = resolveApp();
+    if (appInstance?.registerExtension) {
+      return appInstance;
     }
-    return `/internal${path}`;
+    await sleep(100);
   }
+  return null;
+};
 
-  function getSetting(appInstance, id, fallback) {
-    const settingValue = appInstance?.extensionManager?.setting?.get?.(id);
-    return settingValue ?? fallback;
+const fetchJson = async (path, options) => {
+  const response = api?.fetchApi ? await api.fetchApi(path, options) : await fetch(path, options);
+  if (!response.ok) {
+    throw new Error(`Request failed: ${response.status}`);
   }
+  return response.json();
+};
 
-  async function fetchList({ cursor, limit, extensions, recursive, scanDepth }) {
-    const params = new URLSearchParams();
-    if (cursor) {
-      params.set("cursor", cursor);
+const getSettingValue = (appInstance, id, fallback) => {
+  const sources = [
+    appInstance?.settings?.get?.bind(appInstance?.settings),
+    appInstance?.ui?.settings?.get?.bind(appInstance?.ui?.settings),
+    appInstance?.extensionManager?.setting?.get?.bind(appInstance?.extensionManager?.setting),
+  ].filter(Boolean);
+  for (const getter of sources) {
+    const value = getter(id);
+    if (value !== undefined && value !== null) {
+      return value;
     }
-    if (limit) {
-      params.set("limit", String(limit));
-    }
-    if (extensions?.length) {
-      params.set("extensions", extensions.join(","));
-    }
-    if (scanDepth !== null && scanDepth !== undefined) {
-      params.set("scan_depth", String(scanDepth));
-    } else if (recursive === false) {
-      params.set("recursive", "0");
-    }
-    const response = await fetch(`/assets_plus/output/list?${params.toString()}`);
-    if (!response.ok) {
-      throw new Error("Failed to load Assets+ list");
-    }
-    return response.json();
   }
+  return fallback;
+};
 
-  async function fetchConfig() {
-    const response = await fetch("/assets_plus/config");
-    if (!response.ok) {
-      throw new Error("Failed to load Assets+ config");
+const loadTranslationsList = async () => {
+  try {
+    const payload = await fetchJson("/assets_plus/i18n");
+    if (Array.isArray(payload?.translations)) {
+      return payload.translations;
     }
-    return response.json();
+  } catch (error) {
+    warn(t("log.translations_list_failed"), error);
   }
+  return [];
+};
 
-  async function fetchMetadata(relpath) {
-    const response = await fetch(`/assets_plus/output/meta?relpath=${encodeURIComponent(relpath)}`);
-    if (!response.ok) {
-      throw new Error("Failed to load metadata");
-    }
-    return response.json();
+const loadTranslationData = async (language) => {
+  try {
+    return await fetchJson(`/assets_plus/i18n?lang=${encodeURIComponent(language)}`);
+  } catch (error) {
+    warn(t("log.translation_load_failed", { language }), error);
   }
+  return {};
+};
 
-  async function fetchInputFiles(appInstance) {
-    const response = await fetch(internalUrl(appInstance, "/files/input"), {
-      headers: (() => {
-        const headers = new Headers();
-        const user = getApi(appInstance)?.user;
-        if (user) {
-          headers.set("Comfy-User", user);
+const buildLanguageOptions = (translations) => {
+  if (!translations.length) {
+    return [{ text: DEFAULT_LANGUAGE, value: DEFAULT_LANGUAGE }];
+  }
+  return translations.map((entry) => {
+    const name = entry["translation-name"] || entry.code;
+    const author = entry["translation-author"];
+    const label = author ? `${name} — ${author}` : name;
+    return { text: label, value: entry.code };
+  });
+};
+
+const applyLanguage = async (language, { force = false } = {}) => {
+  const normalized = language || DEFAULT_LANGUAGE;
+  if (!force && normalized === activeLanguage) {
+    return;
+  }
+  fallbackTranslations = await loadTranslationData(DEFAULT_LANGUAGE);
+  activeTranslations =
+    normalized === DEFAULT_LANGUAGE
+      ? fallbackTranslations
+      : await loadTranslationData(normalized);
+  activeLanguage = normalized;
+  explorerInstance?.updateTranslations?.();
+};
+
+const buildSettingsSchema = (t, languageOptions, handleLanguageChange) => {
+  const settingsGroup = t("settings.group");
+  const withCategory = (setting) => applySettingsCategory(setting, settingsGroup);
+  return [
+    withCategory({
+      id: SETTINGS.pollSeconds,
+      name: t("settings.poll_seconds"),
+      type: "number",
+      defaultValue: DEFAULT_POLL_SECONDS,
+      attrs: { min: 1, step: 1 },
+    }),
+    withCategory({
+      id: SETTINGS.listLimit,
+      name: t("settings.list_limit"),
+      type: "number",
+      defaultValue: DEFAULT_LIST_LIMIT,
+      attrs: { min: 50, step: 50 },
+    }),
+    withCategory({
+      id: SETTINGS.recursive,
+      name: t("settings.recursive"),
+      type: "boolean",
+      defaultValue: true,
+    }),
+    withCategory({
+      id: SETTINGS.scanDepth,
+      name: t("settings.scan_depth"),
+      type: "number",
+      defaultValue: 0,
+      attrs: { min: 0, step: 1 },
+    }),
+    withCategory({
+      id: SETTINGS.deleteMode,
+      name: t("settings.delete_mode"),
+      type: "combo",
+      defaultValue: DEFAULT_DELETE_MODE,
+      options: [
+        { text: t("settings.delete_mode.trash"), value: "trash" },
+        { text: t("settings.delete_mode.delete"), value: "delete" },
+        { text: t("settings.delete_mode.hide"), value: "hide" },
+      ],
+    }),
+    withCategory({
+      id: SETTINGS.thumbnailSize,
+      name: t("settings.thumbnail_size"),
+      type: "number",
+      defaultValue: DEFAULT_THUMB_SIZE,
+      attrs: { min: 64, step: 16 },
+    }),
+    withCategory({
+      id: SETTINGS.language,
+      name: t("settings.language"),
+      type: "combo",
+      defaultValue: DEFAULT_LANGUAGE,
+      options: languageOptions,
+      onChange: (newValue, oldValue) => {
+        if (typeof handleLanguageChange === "function") {
+          handleLanguageChange(newValue, oldValue);
         }
-        return headers;
-      })(),
-    });
-    if (!response.ok) {
-      throw new Error("Failed to load input files");
-    }
-    return response.json();
+      },
+    }),
+  ];
+};
+const buildViewUrl = (relpath, directory) => {
+  const segments = relpath.split("/");
+  const filename = segments.pop() ?? relpath;
+  const subfolder = segments.join("/");
+  const params = new URLSearchParams({ filename, type: directory });
+  if (subfolder) {
+    params.set("subfolder", subfolder);
   }
+  return `/view?${params.toString()}`;
+};
 
-  async function deleteAssets(relpaths, mode) {
-    const response = await fetch("/assets_plus/output/delete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ relpaths, mode }),
-    });
-    if (!response.ok) {
-      throw new Error("Failed to delete asset");
-    }
-    return response.json();
-  }
+const buildThumbUrl = (relpath, directory, size) => {
+  const params = new URLSearchParams({
+    relpath,
+    w: String(size),
+    h: String(size),
+  });
+  return `/assets_plus/${directory}/thumb?${params.toString()}`;
+};
 
-  function getFilenameParts(relpath) {
-    const segments = relpath.split("/");
-    const filename = segments.pop() ?? relpath;
-    const subfolder = segments.join("/");
-    return { filename, subfolder };
-  }
-
-  function buildViewUrl(relpath, type) {
-    const { filename, subfolder } = getFilenameParts(relpath);
-    const params = new URLSearchParams({ filename, type });
-    if (subfolder) {
-      params.set("subfolder", subfolder);
-    }
-    return `/view?${params.toString()}`;
-  }
-
-  function buildThumbUrl(relpath, size = DEFAULT_THUMB_SIZE) {
-    const params = new URLSearchParams({
-      relpath,
-      w: String(size),
-      h: String(size),
-    });
-    return `/assets_plus/output/thumb?${params.toString()}`;
-  }
-
-  function normalizeWorkflow(workflow) {
-    if (!workflow) {
+const normalizeWorkflow = (workflow) => {
+  if (!workflow) return null;
+  if (typeof workflow === "string") {
+    try {
+      return JSON.parse(workflow);
+    } catch (error) {
+      warn(t("log.workflow_parse_error"), error);
       return null;
     }
-    if (typeof workflow === "string") {
-      try {
-        return JSON.parse(workflow);
-      } catch (error) {
-        console.warn("Assets+: failed to parse workflow JSON", error);
-        return null;
+  }
+  return workflow;
+};
+
+const workflowFilenameForAsset = (filename) => filename.replace(/\.[^/.]+$/, ".json");
+
+const resolveWorkflowStore = (appInstance) => {
+  const workflowRef = appInstance?.extensionManager?.workflow ?? null;
+  if (!workflowRef) return null;
+  return workflowRef.value ?? workflowRef;
+};
+
+const resolveWorkflowActionsService = (appInstance) => {
+  const fromApp =
+    appInstance?.extensionManager?.workflowActionsService ||
+    appInstance?.extensionManager?.workflowActions ||
+    appInstance?.workflowActionsService ||
+    appInstance?.workflowActions ||
+    null;
+  if (fromApp?.openWorkflowAction) {
+    return fromApp;
+  }
+  return (
+    window?.comfyWorkflowActionsService ||
+    window?.workflowActionsService ||
+    window?.useWorkflowActionsService?.() ||
+    null
+  );
+};
+
+const createElement = (tag, { className, text, attrs } = {}) => {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text) node.textContent = text;
+  if (attrs) {
+    Object.entries(attrs).forEach(([key, value]) => {
+      if (value !== undefined && value !== null) {
+        node.setAttribute(key, String(value));
+      }
+    });
+  }
+  return node;
+};
+
+const createStyleTag = () => {
+  const style = document.createElement("style");
+  style.textContent = `
+    .assets-plus-root {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 12px;
+      color: var(--fg-color, #e5e7eb);
+      font-family: var(--font-family, sans-serif);
+      --assets-plus-border: var(--border-color, #374151);
+      --assets-plus-control-bg: var(--comfy-menu-secondary-bg, var(--comfy-menu-bg, #111827));
+      --assets-plus-card-bg: var(--comfy-menu-bg, var(--bg-color, #0f172a));
+      --assets-plus-input-bg: var(--comfy-input-bg, var(--comfy-menu-bg, #0f172a));
+      --assets-plus-accent: var(--p-primary-color, #2563eb);
+      --assets-plus-accent-contrast: var(--p-primary-contrast-color, #ffffff);
+      --assets-plus-thumb-bg: var(--bg-color, #030712);
+    }
+    .assets-plus-header {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .assets-plus-title-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .assets-plus-title {
+      font-size: 16px;
+      font-weight: 600;
+    }
+    .assets-plus-controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .assets-plus-tab {
+      border: 1px solid var(--assets-plus-border);
+      background: var(--assets-plus-control-bg);
+      color: inherit;
+      padding: 4px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .assets-plus-tab.active {
+      background: var(--assets-plus-accent);
+      border-color: var(--assets-plus-accent);
+      color: var(--assets-plus-accent-contrast);
+    }
+    .assets-plus-button {
+      border: 1px solid var(--assets-plus-border);
+      background: var(--assets-plus-control-bg);
+      color: inherit;
+      padding: 6px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .assets-plus-input {
+      width: 100%;
+      padding: 6px 8px;
+      border-radius: 6px;
+      border: 1px solid var(--assets-plus-border);
+      background: var(--assets-plus-input-bg);
+      color: inherit;
+    }
+    .assets-plus-status {
+      font-size: 12px;
+      opacity: 0.8;
+    }
+    .assets-plus-grid {
+      display: grid;
+      gap: 10px;
+      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    }
+    .assets-plus-card {
+      border: 1px solid var(--assets-plus-border);
+      background: var(--assets-plus-card-bg);
+      border-radius: 8px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      cursor: pointer;
+      transition: border 0.15s ease, box-shadow 0.15s ease;
+    }
+    .assets-plus-card.selected {
+      border-color: var(--assets-plus-accent);
+      box-shadow: 0 0 0 1px var(--assets-plus-accent);
+    }
+    .assets-plus-thumb {
+      width: 100%;
+      height: 120px;
+      background: var(--assets-plus-thumb-bg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .assets-plus-thumb img,
+    .assets-plus-thumb video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .assets-plus-card-body {
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .assets-plus-filename {
+      font-size: 12px;
+      font-weight: 600;
+      word-break: break-all;
+    }
+    .assets-plus-subtitle {
+      font-size: 11px;
+      opacity: 0.7;
+      word-break: break-all;
+    }
+    .assets-plus-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 999px;
+      border: 1px solid var(--assets-plus-accent);
+      color: var(--assets-plus-accent-contrast);
+      background: var(--assets-plus-accent);
+      width: fit-content;
+    }
+    .assets-plus-actions {
+      border-top: 1px solid var(--assets-plus-border);
+      padding-top: 8px;
+      display: none;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .assets-plus-actions.active {
+      display: flex;
+    }
+  `;
+  return style;
+};
+
+class AssetsPlusExplorer {
+  constructor(appInstance, container) {
+    this.app = appInstance;
+    this.container = container;
+    this.state = {
+      tab: OUTPUT_TAB,
+      items: [],
+      loading: false,
+      error: null,
+      search: "",
+      selected: new Set(),
+      config: null,
+      pollId: null,
+    };
+    this.elements = {};
+    this.init();
+  }
+
+  init() {
+    this.container.innerHTML = "";
+    const root = createElement("div", { className: "assets-plus-root" });
+    const header = createElement("div", { className: "assets-plus-header" });
+
+    const titleRow = createElement("div", { className: "assets-plus-title-row" });
+    const title = createElement("div", { className: "assets-plus-title", text: t("app.title") });
+    const refreshButton = createElement("button", {
+      className: "assets-plus-button",
+      text: t("actions.refresh"),
+    });
+    titleRow.appendChild(title);
+    titleRow.appendChild(refreshButton);
+
+    const controls = createElement("div", { className: "assets-plus-controls" });
+    const outputTab = createElement("button", {
+      className: "assets-plus-tab active",
+      text: t("tabs.output"),
+    });
+    const inputTab = createElement("button", {
+      className: "assets-plus-tab",
+      text: t("tabs.input"),
+    });
+    controls.appendChild(outputTab);
+    controls.appendChild(inputTab);
+
+    const searchInput = createElement("input", {
+      className: "assets-plus-input",
+      attrs: { placeholder: t("search.placeholder") },
+    });
+
+    header.appendChild(titleRow);
+    header.appendChild(controls);
+    header.appendChild(searchInput);
+
+    const status = createElement("div", { className: "assets-plus-status" });
+    const grid = createElement("div", { className: "assets-plus-grid" });
+
+    const actionsBar = createElement("div", { className: "assets-plus-actions" });
+    const selectionLabel = createElement("div", { className: "assets-plus-subtitle" });
+    const downloadButton = createElement("button", {
+      className: "assets-plus-button",
+      text: t("actions.download"),
+    });
+    const deleteButton = createElement("button", {
+      className: "assets-plus-button",
+      text: t("actions.delete"),
+    });
+    const openWorkflowButton = createElement("button", {
+      className: "assets-plus-button",
+      text: t("actions.open_workflow_new_tab"),
+    });
+    const replaceWorkflowButton = createElement("button", {
+      className: "assets-plus-button",
+      text: t("actions.replace_workflow"),
+    });
+
+    actionsBar.appendChild(selectionLabel);
+    actionsBar.appendChild(downloadButton);
+    actionsBar.appendChild(deleteButton);
+    actionsBar.appendChild(openWorkflowButton);
+    actionsBar.appendChild(replaceWorkflowButton);
+
+    root.appendChild(header);
+    root.appendChild(status);
+    root.appendChild(grid);
+    root.appendChild(actionsBar);
+
+    this.container.appendChild(createStyleTag());
+    this.container.appendChild(root);
+
+    this.elements = {
+      root,
+      title,
+      outputTab,
+      inputTab,
+      refreshButton,
+      searchInput,
+      status,
+      grid,
+      actionsBar,
+      selectionLabel,
+      downloadButton,
+      deleteButton,
+      openWorkflowButton,
+      replaceWorkflowButton,
+    };
+
+    refreshButton.addEventListener("click", () => this.refreshList());
+    outputTab.addEventListener("click", () => this.setTab(OUTPUT_TAB));
+    inputTab.addEventListener("click", () => this.setTab(INPUT_TAB));
+    searchInput.addEventListener("input", (event) => {
+      this.state.search = event.target.value;
+      this.renderGrid();
+    });
+
+    downloadButton.addEventListener("click", () => this.handleDownload());
+    deleteButton.addEventListener("click", () => this.handleDelete());
+    openWorkflowButton.addEventListener("click", () => this.openWorkflow(false));
+    replaceWorkflowButton.addEventListener("click", () => this.openWorkflow(true));
+
+    this.loadConfig()
+      .then(() => this.refreshList())
+      .catch(() => this.refreshList());
+
+    this.startPolling();
+  }
+
+  updateTranslations() {
+    const {
+      title,
+      outputTab,
+      inputTab,
+      refreshButton,
+      searchInput,
+      downloadButton,
+      deleteButton,
+      openWorkflowButton,
+      replaceWorkflowButton,
+    } = this.elements;
+    if (title) title.textContent = t("app.title");
+    if (outputTab) outputTab.textContent = t("tabs.output");
+    if (inputTab) inputTab.textContent = t("tabs.input");
+    if (refreshButton) refreshButton.textContent = t("actions.refresh");
+    if (searchInput) searchInput.setAttribute("placeholder", t("search.placeholder"));
+    if (downloadButton) downloadButton.textContent = t("actions.download");
+    if (deleteButton) deleteButton.textContent = t("actions.delete");
+    if (openWorkflowButton) openWorkflowButton.textContent = t("actions.open_workflow_new_tab");
+    if (replaceWorkflowButton) replaceWorkflowButton.textContent = t("actions.replace_workflow");
+    this.updateActionsBar();
+    this.renderGrid();
+  }
+
+  destroy() {
+    this.stopPolling();
+    this.container.innerHTML = "";
+  }
+
+  toast(options) {
+    this.app?.extensionManager?.toast?.add?.(options);
+  }
+
+  getSetting(id, fallback) {
+    const sources = [
+      this.app?.settings?.get?.bind(this.app?.settings),
+      this.app?.ui?.settings?.get?.bind(this.app?.ui?.settings),
+      this.app?.extensionManager?.setting?.get?.bind(this.app?.extensionManager?.setting),
+    ].filter(Boolean);
+    for (const getter of sources) {
+      const value = getter(id);
+      if (value !== undefined && value !== null) {
+        return value;
       }
     }
-    return workflow;
+    return fallback;
   }
 
-  function workflowFilenameForAsset(assetName) {
-    return assetName.replace(/\.[^/.]+$/, ".json");
+  getSettingsSnapshot() {
+    const config = this.state.config || {};
+    const scanDepthSetting = this.getSetting(SETTINGS.scanDepth, config.scan_depth ?? 0);
+    const scanDepth = Number(scanDepthSetting) > 0 ? Number(scanDepthSetting) : null;
+    const thumbnailSize = Number(
+      this.getSetting(SETTINGS.thumbnailSize, (config.thumbnail_size || [DEFAULT_THUMB_SIZE])[0])
+    );
+    return {
+      pollSeconds: Number(this.getSetting(SETTINGS.pollSeconds, config.poll_seconds ?? DEFAULT_POLL_SECONDS)),
+      listLimit: Number(this.getSetting(SETTINGS.listLimit, config.list_limit ?? DEFAULT_LIST_LIMIT)),
+      recursive: Boolean(this.getSetting(SETTINGS.recursive, config.recursive ?? true)),
+      scanDepth,
+      deleteMode: String(this.getSetting(SETTINGS.deleteMode, config.default_delete_mode ?? DEFAULT_DELETE_MODE)),
+      thumbnailSize: Number.isFinite(thumbnailSize) ? thumbnailSize : DEFAULT_THUMB_SIZE,
+      extensions: (config.allowed_extensions || DEFAULT_EXTENSIONS).map((ext) =>
+        ext.startsWith(".") ? ext.slice(1) : ext
+      ),
+    };
   }
 
-  function resolveWorkflowStore(appInstance) {
-    const workflowRef = appInstance?.extensionManager?.workflow ?? null;
-    if (!workflowRef) {
-      return null;
-    }
-    return workflowRef.value ?? workflowRef;
+  setStatus(message) {
+    this.elements.status.textContent = message || "";
   }
 
-  function resolveWorkflowActionsService(appInstance) {
-    const fromApp =
-      appInstance?.extensionManager?.workflowActionsService ||
-      appInstance?.extensionManager?.workflowActions ||
-      appInstance?.workflowActionsService ||
-      appInstance?.workflowActions;
-    if (fromApp?.openWorkflowAction) {
-      return fromApp;
-    }
-    const globalService =
-      window?.comfyWorkflowActionsService ||
-      window?.workflowActionsService ||
-      window?.useWorkflowActionsService?.() ||
-      null;
-    if (globalService?.openWorkflowAction) {
-      return globalService;
-    }
-    return null;
+  setTab(tab) {
+    if (this.state.tab === tab) return;
+    this.state.tab = tab;
+    this.state.selected = new Set();
+    this.updateTabs();
+    this.refreshList();
+    this.startPolling();
   }
 
-  async function extractWorkflowFromAsset(asset, { fetchMetadataFallback }) {
-    const extractor =
-      window?.extractWorkflowFromAsset ||
-      window?.comfyExtractWorkflowFromAsset ||
-      window?.comfy?.extractWorkflowFromAsset ||
-      null;
-    if (typeof extractor === "function") {
-      return extractor(asset);
+  updateTabs() {
+    const { outputTab, inputTab } = this.elements;
+    outputTab.classList.toggle("active", this.state.tab === OUTPUT_TAB);
+    inputTab.classList.toggle("active", this.state.tab === INPUT_TAB);
+    this.updateActionsBar();
+  }
+
+  clearSelection() {
+    this.state.selected = new Set();
+  }
+
+  getSelectedItems() {
+    return this.state.items.filter((item) => this.state.selected.has(item.relpath));
+  }
+
+  updateActionsBar() {
+    const selectionCount = this.state.selected.size;
+    const { actionsBar, selectionLabel, deleteButton, openWorkflowButton, replaceWorkflowButton } =
+      this.elements;
+    actionsBar.classList.toggle("active", selectionCount > 0);
+    selectionLabel.textContent = t("selection.label", { count: selectionCount });
+    deleteButton.style.display = this.state.tab === OUTPUT_TAB ? "inline-flex" : "none";
+    const singleSelection = selectionCount === 1;
+    openWorkflowButton.style.display = singleSelection ? "inline-flex" : "none";
+    replaceWorkflowButton.style.display = singleSelection ? "inline-flex" : "none";
+  }
+
+  applySelectionStyles() {
+    this.elements.grid.querySelectorAll(".assets-plus-card").forEach((card) => {
+      const relpath = card.getAttribute("data-relpath");
+      card.classList.toggle("selected", this.state.selected.has(relpath));
+    });
+  }
+
+  renderGrid() {
+    const grid = this.elements.grid;
+    grid.innerHTML = "";
+    const filtered = this.state.items.filter((item) => {
+      if (!this.state.search) return true;
+      const haystack = `${item.filename} ${item.relpath}`.toLowerCase();
+      return haystack.includes(this.state.search.toLowerCase());
+    });
+
+    if (this.state.loading) {
+      this.setStatus(t("status.loading"));
+    } else if (this.state.error) {
+      this.setStatus(this.state.error);
+    } else if (!filtered.length) {
+      this.setStatus(t("status.empty"));
+    } else {
+      this.setStatus("");
     }
 
-    const baseFilename = workflowFilenameForAsset(asset.name);
-    const directWorkflow = asset.user_metadata?.workflow;
-    if (directWorkflow) {
-      return { workflow: normalizeWorkflow(directWorkflow), filename: baseFilename };
+    if (!filtered.length) {
+      this.updateActionsBar();
+      return;
     }
+
+    const { thumbnailSize } = this.getSettingsSnapshot();
+
+    filtered.forEach((item) => {
+      const card = createElement("div", { className: "assets-plus-card" });
+      card.setAttribute("data-relpath", item.relpath);
+
+      const thumb = createElement("div", { className: "assets-plus-thumb" });
+      const thumbUrl = buildThumbUrl(item.relpath, this.state.tab, thumbnailSize);
+      if (item.type === "video") {
+        const video = document.createElement("video");
+        video.src = thumbUrl;
+        video.muted = true;
+        video.loop = true;
+        video.playsInline = true;
+        video.preload = "metadata";
+        thumb.appendChild(video);
+      } else {
+        const image = document.createElement("img");
+        image.src = thumbUrl;
+        image.alt = item.filename;
+        thumb.appendChild(image);
+      }
+
+      const cardBody = createElement("div", { className: "assets-plus-card-body" });
+      cardBody.appendChild(
+        createElement("div", { className: "assets-plus-filename", text: item.filename })
+      );
+      cardBody.appendChild(
+        createElement("div", { className: "assets-plus-subtitle", text: item.relpath })
+      );
+      if (item.has_workflow) {
+        cardBody.appendChild(
+          createElement("div", { className: "assets-plus-badge", text: t("badge.workflow") })
+        );
+      }
+
+      card.appendChild(thumb);
+      card.appendChild(cardBody);
+
+      card.addEventListener("click", () => {
+        if (this.state.selected.has(item.relpath)) {
+          this.state.selected.delete(item.relpath);
+        } else {
+          this.state.selected.add(item.relpath);
+        }
+        this.applySelectionStyles();
+        this.updateActionsBar();
+      });
+
+      grid.appendChild(card);
+    });
+
+    this.applySelectionStyles();
+    this.updateActionsBar();
+  }
+
+  async loadConfig() {
+    try {
+      this.state.config = await fetchJson("/assets_plus/config");
+    } catch (error) {
+      warn(t("log.config_load_failed"), error);
+    }
+  }
+
+  async refreshList() {
+    this.state.loading = true;
+    this.state.error = null;
+    this.renderGrid();
+    try {
+      const settings = this.getSettingsSnapshot();
+      const params = new URLSearchParams();
+      params.set("limit", String(settings.listLimit));
+      if (settings.extensions?.length) params.set("extensions", settings.extensions.join(","));
+      if (settings.scanDepth !== null && settings.scanDepth !== undefined) {
+        params.set("scan_depth", String(settings.scanDepth));
+      } else if (settings.recursive === false) {
+        params.set("recursive", "0");
+      }
+      const payload = await fetchJson(`/assets_plus/${this.state.tab}/list?${params.toString()}`);
+      this.state.items = payload.items || [];
+      this.clearSelection();
+    } catch (error) {
+      this.state.error = t("status.load_error");
+    } finally {
+      this.state.loading = false;
+      this.renderGrid();
+    }
+  }
+
+  async pollForUpdates() {
+    if (this.state.tab !== OUTPUT_TAB) return;
+    if (!this.elements.root?.offsetParent) return;
+    try {
+      const settings = this.getSettingsSnapshot();
+      const params = new URLSearchParams();
+      params.set("limit", String(settings.listLimit));
+      if (settings.extensions?.length) params.set("extensions", settings.extensions.join(","));
+      if (settings.scanDepth !== null && settings.scanDepth !== undefined) {
+        params.set("scan_depth", String(settings.scanDepth));
+      } else if (settings.recursive === false) {
+        params.set("recursive", "0");
+      }
+      const payload = await fetchJson(`/assets_plus/${this.state.tab}/list?${params.toString()}`);
+      this.state.items = payload.items || [];
+      this.renderGrid();
+    } catch (error) {
+      warn(t("log.poll_failed"), error);
+    }
+  }
+
+  startPolling() {
+    this.stopPolling();
+    if (this.state.tab !== OUTPUT_TAB) return;
+    const { pollSeconds } = this.getSettingsSnapshot();
+    if (!Number.isFinite(pollSeconds) || pollSeconds <= 0) return;
+    this.state.pollId = window.setInterval(() => this.pollForUpdates(), pollSeconds * 1000);
+  }
+
+  stopPolling() {
+    if (this.state.pollId) {
+      window.clearInterval(this.state.pollId);
+      this.state.pollId = null;
+    }
+  }
+
+  handleDownload() {
+    const selectedItems = this.getSelectedItems();
+    if (!selectedItems.length) return;
+    selectedItems.forEach((item) => {
+      const url = buildViewUrl(item.relpath, this.state.tab);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = item.filename;
+      link.rel = "noopener";
+      link.target = "_blank";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    });
+  }
+
+  async handleDelete() {
+    const selectedItems = this.getSelectedItems();
+    if (!selectedItems.length) return;
+    const settings = this.getSettingsSnapshot();
+    const mode = settings.deleteMode;
+    const message =
+      mode === "hide"
+        ? t("confirm.delete.hide_message")
+        : t("confirm.delete.delete_message");
+    const dialogService = this.app?.extensionManager?.dialog;
+    let confirmed = false;
+    if (dialogService?.confirm) {
+      confirmed =
+        (await dialogService.confirm({
+          title: t("confirm.delete.title"),
+          message,
+          type: mode === "hide" ? "default" : "delete",
+          itemList: selectedItems.map((asset) => asset.filename),
+        })) === true;
+    } else {
+      confirmed = window.confirm(message);
+    }
+    if (!confirmed) return;
 
     try {
-      const metadata = await fetchMetadataFallback(asset.id);
-      if (metadata?.workflow) {
-        return {
-          workflow: normalizeWorkflow(metadata.workflow),
-          filename: baseFilename,
-        };
-      }
+      await fetchJson("/assets_plus/output/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ relpaths: selectedItems.map((item) => item.relpath), mode }),
+      });
+      await this.refreshList();
     } catch (error) {
-      console.warn("Assets+: failed to extract workflow metadata", error);
+      this.toast({
+        severity: "error",
+        summary: t("toast.summary"),
+        detail: t("toast.delete_failed"),
+        life: 3000,
+      });
     }
-
-    return { workflow: null, filename: baseFilename };
   }
 
-  function resolveComponentFromAssetsTab(appInstance, name) {
-    const tabs = appInstance?.extensionManager?.getSidebarTabs?.() ?? [];
-    const assetsTab = tabs.find((tab) => tab.id === "assets");
-    const assetsComponent = assetsTab?.component;
-    return (
-      assetsComponent?.components?.[name] ||
-      assetsComponent?.__components?.[name] ||
-      assetsComponent?.[name] ||
-      null
+  async extractWorkflow(asset) {
+    const payload = await fetchJson(
+      `/assets_plus/${this.state.tab}/meta?relpath=${encodeURIComponent(asset.relpath)}`
     );
-  }
-
-  function resolveVueComponent(appInstance, name) {
-    const vueApp = getVueApp();
-    const globalRegistry = vueApp?._context?.components?.[name];
-    return (
-      globalRegistry ||
-      window.ComfyUIComponents?.[name] ||
-      window.comfyUIComponents?.[name] ||
-      resolveComponentFromAssetsTab(appInstance, name) ||
-      null
-    );
-  }
-
-  function showToast(appInstance, options) {
-    const toast = appInstance?.extensionManager?.toast;
-    if (toast?.add) {
-      toast.add(options);
-    }
-  }
-
-  function inferMediaType(name) {
-    const lower = name.toLowerCase();
-    if (lower.endsWith(".mp4") || lower.endsWith(".webm")) {
-      return "video";
-    }
-    if (
-      lower.endsWith(".mp3") ||
-      lower.endsWith(".wav") ||
-      lower.endsWith(".ogg") ||
-      lower.endsWith(".flac")
-    ) {
-      return "audio";
-    }
-    return "image";
-  }
-
-  function buildGalleryItem(asset) {
-    const relpath = asset.id;
-    const type = asset.user_metadata?.source === "input" ? "input" : "output";
-    const url = buildViewUrl(relpath, type);
-    const lower = asset.name.toLowerCase();
-    const isVideo = lower.endsWith(".mp4") || lower.endsWith(".webm");
-    const isAudio =
-      lower.endsWith(".mp3") ||
-      lower.endsWith(".wav") ||
-      lower.endsWith(".ogg") ||
-      lower.endsWith(".flac");
+    const metadata = payload?.metadata ?? {};
+    const workflow = normalizeWorkflow(metadata.workflow);
     return {
-      url,
-      filename: asset.name,
-      isVideo,
-      isAudio,
-      isImage: !isVideo && !isAudio,
-      htmlVideoType: lower.endsWith(".webm") ? "video/webm" : lower.endsWith(".mp4") ? "video/mp4" : undefined,
-      htmlAudioType: lower.endsWith(".mp3")
-        ? "audio/mpeg"
-        : lower.endsWith(".wav")
-          ? "audio/wav"
-          : lower.endsWith(".ogg")
-            ? "audio/ogg"
-            : lower.endsWith(".flac")
-              ? "audio/flac"
-              : undefined,
-      vhsAdvancedPreviewUrl: url,
+      workflow,
+      filename: workflowFilenameForAsset(asset.filename),
     };
   }
 
-  function registerSettings(appInstance, defaults) {
-    const settings = appInstance?.ui?.settings;
-    if (!settings?.addSetting) {
-      return;
+  async openWorkflow(replaceCurrent) {
+    const selectedItems = this.getSelectedItems();
+    if (selectedItems.length !== 1) return;
+    try {
+      const { workflow, filename } = await this.extractWorkflow(selectedItems[0]);
+      if (!workflow) {
+        this.toast({
+          severity: "warn",
+          summary: t("toast.summary"),
+          detail: t("toast.workflow_missing"),
+          life: 2500,
+        });
+        return;
+      }
+      if (replaceCurrent) {
+        const workflowStore = resolveWorkflowStore(this.app);
+        const activeWorkflow = workflowStore?.activeWorkflow ?? null;
+        await this.app?.loadGraphData?.(workflow, true, true, activeWorkflow);
+        this.toast({
+          severity: "success",
+          summary: t("toast.summary"),
+          detail: t("toast.workflow_replaced"),
+          life: 2000,
+        });
+        return;
+      }
+      const workflowActions = resolveWorkflowActionsService(this.app);
+      if (workflowActions?.openWorkflowAction) {
+        const result = await workflowActions.openWorkflowAction(workflow, filename);
+        if (!result?.success) {
+          throw new Error(result?.error || "Failed to open workflow");
+        }
+        this.toast({
+          severity: "success",
+          summary: t("toast.summary"),
+          detail: t("toast.workflow_opened"),
+          life: 2000,
+        });
+        return;
+      }
+      const workflowStore = resolveWorkflowStore(this.app);
+      if (workflowStore?.createTemporary && workflowStore?.openWorkflow) {
+        const temp = workflowStore.createTemporary(filename, workflow);
+        await workflowStore.openWorkflow(temp);
+        this.toast({
+          severity: "success",
+          summary: t("toast.summary"),
+          detail: t("toast.workflow_opened"),
+          life: 2000,
+        });
+        return;
+      }
+      warn(t("log.workflow_actions_unavailable"));
+    } catch (error) {
+      warn(t("log.workflow_open_failed"), error);
+      this.toast({
+        severity: "error",
+        summary: t("toast.summary"),
+        detail: t("toast.workflow_open_failed"),
+        life: 2500,
+      });
     }
-    settings.addSetting({
-      id: SETTINGS.pollSeconds,
-      name: "Assets+ Poll interval (seconds)",
-      category: ["Assets+", "Generated+", "Polling"],
-      tooltip: "Как часто обновлять список Generated+",
-      type: "slider",
-      attrs: { min: 1, max: 60, step: 1 },
-      defaultValue: defaults.poll_seconds ?? DEFAULT_POLL_SECONDS,
-    });
-    settings.addSetting({
-      id: SETTINGS.deleteMode,
-      name: "Assets+ Delete mode",
-      category: ["Assets+", "Generated+", "Deletion"],
-      tooltip: "Режим удаления ассетов в Generated+",
-      type: "combo",
-      options: ["trash", "delete", "hide"],
-      defaultValue: defaults.default_delete_mode ?? "trash",
-    });
-    settings.addSetting({
-      id: SETTINGS.recursive,
-      name: "Assets+ Recursive scan",
-      category: ["Assets+", "Generated+", "Scanning"],
-      tooltip: "Искать ассеты рекурсивно в output",
-      type: "boolean",
-      defaultValue: defaults.recursive ?? true,
-    });
-    settings.addSetting({
-      id: SETTINGS.scanDepth,
-      name: "Assets+ Scan depth",
-      category: ["Assets+", "Generated+", "Scanning"],
-      tooltip: "Максимальная глубина сканирования (-1 = без лимита)",
-      type: "number",
-      defaultValue: Number.isFinite(defaults.scan_depth) ? defaults.scan_depth : -1,
-    });
-    settings.addSetting({
-      id: SETTINGS.listLimit,
-      name: "Assets+ List limit",
-      category: ["Assets+", "Generated+", "Paging"],
-      tooltip: "Сколько элементов загружать за раз",
-      type: "number",
-      defaultValue: defaults.list_limit ?? DEFAULT_PAGE_LIMIT,
-    });
-    settings.addSetting({
-      id: SETTINGS.thumbnailSize,
-      name: "Assets+ Thumbnail size",
-      category: ["Assets+", "Generated+", "Thumbnails"],
-      tooltip: "Размер превью в пикселях",
-      type: "number",
-      defaultValue: defaults.thumbnail_size?.[0] ?? DEFAULT_THUMB_SIZE,
-    });
-    settings.addSetting({
-      id: SETTINGS.extensions,
-      name: "Assets+ Allowed extensions",
-      category: ["Assets+", "Generated+", "Filters"],
-      tooltip: "Список расширений через запятую",
-      type: "string",
-      defaultValue: (defaults.allowed_extensions || []).join(","),
-    });
+  }
+}
+
+const registerSidebarTab = (appInstance) => {
+  if (!appInstance?.extensionManager?.registerSidebarTab) {
+    warn(t("log.register_sidebar_unavailable"));
+    return;
   }
 
-  function createAssetsPlusComponent(appInstance, vue) {
-    const { markRaw, computed, ref, onMounted, onBeforeUnmount, onActivated, onDeactivated, watch } =
-      vue;
+  appInstance.extensionManager.registerSidebarTab({
+    id: SIDEBAR_TAB_ID,
+    icon: "pi pi-folder-open",
+    title: t("app.title"),
+    tooltip: t("app.tooltip"),
+    label: t("app.label"),
+    type: "custom",
+    render: (container) => {
+      log(t("log.render_sidebar"));
+      explorerInstance?.destroy?.();
+      explorerInstance = new AssetsPlusExplorer(appInstance, container);
+    },
+    destroy: () => {
+      explorerInstance?.destroy?.();
+      explorerInstance = null;
+    },
+  });
+};
 
-    const MediaAssetCard = resolveVueComponent(appInstance, "MediaAssetCard");
-    const MediaAssetFilterBar = resolveVueComponent(appInstance, "MediaAssetFilterBar");
-    const ResultGallery = resolveVueComponent(appInstance, "ResultGallery");
-    const VirtualGrid = resolveVueComponent(appInstance, "VirtualGrid");
-    const SidebarTabTemplate = resolveVueComponent(appInstance, "SidebarTabTemplate");
-    const TabList = resolveVueComponent(appInstance, "TabList");
-    const Tab = resolveVueComponent(appInstance, "Tab");
-    const Button = resolveVueComponent(appInstance, "Button");
-    const ProgressSpinner = resolveVueComponent(appInstance, "ProgressSpinner");
-    const NoResultsPlaceholder = resolveVueComponent(appInstance, "NoResultsPlaceholder");
-
-    if (!MediaAssetCard || !MediaAssetFilterBar || !ResultGallery || !VirtualGrid) {
-      console.warn(
-        "Assets+: required Media Assets components not found; check ComfyUI_frontend availability."
-      );
-    }
-
-    const component = {
-      name: "AssetsPlusSidebarTab",
-      components: {
-        MediaAssetCard: MediaAssetCard ?? undefined,
-        MediaAssetFilterBar: MediaAssetFilterBar ?? undefined,
-        ResultGallery: ResultGallery ?? undefined,
-        VirtualGrid: VirtualGrid ?? undefined,
-        SidebarTabTemplate: SidebarTabTemplate ?? undefined,
-        TabList: TabList ?? undefined,
-        Tab: Tab ?? undefined,
-        Button: Button ?? undefined,
-        ProgressSpinner: ProgressSpinner ?? undefined,
-        NoResultsPlaceholder: NoResultsPlaceholder ?? undefined,
-      },
-      setup() {
-        const hasTabs = Boolean(TabList && Tab);
-        const hasNoResultsPlaceholder = Boolean(NoResultsPlaceholder);
-        const activeTab = ref("output");
-        const outputItems = ref([]);
-        const inputItems = ref([]);
-        const isLoadingOutput = ref(false);
-        const isLoadingInput = ref(false);
-        const isLoadingMore = ref(false);
-        const hasMoreOutput = ref(true);
-        const cursor = ref(null);
-        const error = ref("");
-        const deleteMode = ref("trash");
-        const searchQuery = ref("");
-        const sortBy = ref("newest");
-        const mediaTypeFilters = ref([]);
-        const openContextMenuId = ref(null);
-        const galleryActiveIndex = ref(-1);
-        const pollSeconds = ref(DEFAULT_POLL_SECONDS);
-        const listLimit = ref(DEFAULT_PAGE_LIMIT);
-        const extensions = ref(DEFAULT_EXTENSIONS);
-        const recursive = ref(true);
-        const scanDepth = ref(null);
-        const thumbnailSize = ref(DEFAULT_THUMB_SIZE);
-        const outputSelection = ref(new Set());
-        const inputSelection = ref(new Set());
-        const selectedIds = computed(() =>
-          activeTab.value === "output" ? outputSelection.value : inputSelection.value
-        );
-        let pollId = null;
-        let settingListenersRegistered = false;
-
-        const resolveActiveTabId = () => {
-          const manager = appInstance?.extensionManager;
-          const candidate =
-            manager?.activeSidebarTabId ??
-            manager?.sidebarActiveTabId ??
-            manager?.activeSidebarTab?.id ??
-            manager?.sidebar?.activeTabId ??
-            null;
-          if (candidate?.value !== undefined) {
-            return candidate.value;
-          }
-          return candidate ?? null;
-        };
-
-        const setActiveState = (nextActive) => {
-          if (nextActive) {
-            if (activeTab.value === "output") {
-              fetchOutputList();
-              startPolling();
-            } else {
-              fetchInputList();
-              stopPolling();
-            }
-          } else {
-            stopPolling();
-          }
-        };
-
-        const startPolling = () => {
-          if (pollId) {
-            return;
-          }
-          const interval = Math.max(1, pollSeconds.value) * 1000;
-          pollId = window.setInterval(pollForUpdates, interval);
-        };
-
-        const stopPolling = () => {
-          if (pollId) {
-            window.clearInterval(pollId);
-            pollId = null;
-          }
-        };
-
-        const syncSelection = (nextItems, selectionRef) => {
-          const validIds = new Set(nextItems.map((item) => item.relpath || item.id));
-          const nextSelected = new Set(
-            Array.from(selectionRef.value).filter((id) => validIds.has(id))
-          );
-          selectionRef.value = nextSelected;
-        };
-
-        const applyConfig = (config) => {
-          if (!config || typeof config !== "object") {
-            return;
-          }
-          if (Array.isArray(config.allowed_extensions) && config.allowed_extensions.length) {
-            extensions.value = config.allowed_extensions.map((ext) =>
-              ext.startsWith(".") ? ext.slice(1) : ext
-            );
-          }
-          if (Number.isFinite(config.list_limit)) {
-            listLimit.value = config.list_limit;
-          }
-          if (Number.isFinite(config.poll_seconds)) {
-            pollSeconds.value = config.poll_seconds;
-          }
-          if (typeof config.recursive === "boolean") {
-            recursive.value = config.recursive;
-          }
-          if (Number.isFinite(config.scan_depth)) {
-            scanDepth.value = config.scan_depth;
-          } else if (config.scan_depth === null) {
-            scanDepth.value = null;
-          }
-          if (typeof config.default_delete_mode === "string") {
-            deleteMode.value = config.default_delete_mode;
-          }
-          if (Array.isArray(config.thumbnail_size) && config.thumbnail_size.length) {
-            const size = Number(config.thumbnail_size[0]);
-            if (Number.isFinite(size)) {
-              thumbnailSize.value = size;
-            }
-          } else if (Number.isFinite(config.thumbnail_size)) {
-            thumbnailSize.value = Number(config.thumbnail_size);
-          }
-        };
-
-        const applySettingOverrides = () => {
-          const rawExtensions = getSetting(
-            appInstance,
-            SETTINGS.extensions,
-            extensions.value.join(",")
-          );
-          if (typeof rawExtensions === "string") {
-            extensions.value = rawExtensions
-              .split(",")
-              .map((ext) => ext.trim())
-              .filter(Boolean)
-              .map((ext) => (ext.startsWith(".") ? ext.slice(1) : ext));
-          }
-          const listLimitValue = Number(getSetting(appInstance, SETTINGS.listLimit, listLimit.value));
-          if (Number.isFinite(listLimitValue) && listLimitValue > 0) {
-            listLimit.value = listLimitValue;
-          }
-          const pollSecondsValue = Number(
-            getSetting(appInstance, SETTINGS.pollSeconds, pollSeconds.value)
-          );
-          if (Number.isFinite(pollSecondsValue) && pollSecondsValue > 0) {
-            pollSeconds.value = pollSecondsValue;
-          }
-          const scanDepthValue = Number(
-            getSetting(appInstance, SETTINGS.scanDepth, scanDepth.value ?? -1)
-          );
-          scanDepth.value = Number.isFinite(scanDepthValue) && scanDepthValue >= 0 ? scanDepthValue : null;
-          const recursiveValue = getSetting(appInstance, SETTINGS.recursive, recursive.value);
-          if (typeof recursiveValue === "boolean") {
-            recursive.value = recursiveValue;
-          }
-          const deleteModeValue = getSetting(appInstance, SETTINGS.deleteMode, deleteMode.value);
-          if (typeof deleteModeValue === "string") {
-            deleteMode.value = deleteModeValue;
-          }
-          const thumbValue = Number(
-            getSetting(appInstance, SETTINGS.thumbnailSize, thumbnailSize.value)
-          );
-          if (Number.isFinite(thumbValue) && thumbValue > 0) {
-            thumbnailSize.value = thumbValue;
-          }
-        };
-
-        const refreshConfig = async () => {
-          try {
-            const config = await fetchConfig();
-            applyConfig(config);
-            applySettingOverrides();
-          } catch (err) {
-            console.warn("Assets+: failed to load config", err);
-          }
-        };
-
-        const registerSettingListeners = () => {
-          if (settingListenersRegistered) {
-            return;
-          }
-          const settings = appInstance?.ui?.settings;
-          if (!settings?.addEventListener) {
-            return;
-          }
-          settings.addEventListener(`${SETTINGS.pollSeconds}.change`, (event) => {
-            const value = Number(event?.detail?.value);
-            if (Number.isFinite(value) && value > 0) {
-              pollSeconds.value = value;
-            }
-          });
-          settings.addEventListener(`${SETTINGS.deleteMode}.change`, (event) => {
-            const value = event?.detail?.value;
-            if (typeof value === "string") {
-              deleteMode.value = value;
-            }
-          });
-          settings.addEventListener(`${SETTINGS.recursive}.change`, (event) => {
-            const value = event?.detail?.value;
-            if (typeof value === "boolean") {
-              recursive.value = value;
-            }
-          });
-          settings.addEventListener(`${SETTINGS.scanDepth}.change`, (event) => {
-            const value = Number(event?.detail?.value);
-            scanDepth.value = Number.isFinite(value) && value >= 0 ? value : null;
-          });
-          settings.addEventListener(`${SETTINGS.listLimit}.change`, (event) => {
-            const value = Number(event?.detail?.value);
-            if (Number.isFinite(value) && value > 0) {
-              listLimit.value = value;
-            }
-          });
-          settings.addEventListener(`${SETTINGS.thumbnailSize}.change`, (event) => {
-            const value = Number(event?.detail?.value);
-            if (Number.isFinite(value) && value > 0) {
-              thumbnailSize.value = value;
-            }
-          });
-          settings.addEventListener(`${SETTINGS.extensions}.change`, (event) => {
-            const value = event?.detail?.value;
-            if (typeof value === "string") {
-              extensions.value = value
-                .split(",")
-                .map((ext) => ext.trim())
-                .filter(Boolean)
-                .map((ext) => (ext.startsWith(".") ? ext.slice(1) : ext));
-            }
-          });
-          settingListenersRegistered = true;
-        };
-
-        const fetchOutputList = async () => {
-          isLoadingOutput.value = true;
-          error.value = "";
-          try {
-            const data = await fetchList({
-              limit: listLimit.value,
-              extensions: extensions.value,
-              recursive: recursive.value,
-              scanDepth: scanDepth.value,
-            });
-            outputItems.value = data.items || [];
-            cursor.value = data.cursor ?? null;
-            hasMoreOutput.value = Boolean(cursor.value) && (data.items?.length ?? 0) >= listLimit.value;
-            syncSelection(outputItems.value, outputSelection);
-          } catch (err) {
-            console.error(err);
-            error.value = "Не удалось загрузить ассеты.";
-          } finally {
-            isLoadingOutput.value = false;
-          }
-        };
-
-        const fetchInputList = async () => {
-          isLoadingInput.value = true;
-          error.value = "";
-          try {
-            const data = await fetchInputFiles(appInstance);
-            inputItems.value = (Array.isArray(data) ? data : []).map((relpath) => ({
-              relpath,
-              filename: relpath.split("/").pop() ?? relpath,
-              mtime: 0,
-              size: 0,
-              type: inferMediaType(relpath),
-              has_workflow: false,
-            }));
-            syncSelection(inputItems.value, inputSelection);
-          } catch (err) {
-            console.error(err);
-            error.value = "Не удалось загрузить импортированные ассеты.";
-          } finally {
-            isLoadingInput.value = false;
-          }
-        };
-
-        const refreshActiveTab = async () => {
-          if (activeTab.value === "output") {
-            await fetchOutputList();
-          } else {
-            await fetchInputList();
-          }
-        };
-
-        const loadMore = async () => {
-          if (activeTab.value !== "output") {
-            return;
-          }
-          if (isLoadingMore.value || !hasMoreOutput.value) {
-            return;
-          }
-          isLoadingMore.value = true;
-          try {
-            const data = await fetchList({
-              cursor: cursor.value,
-              limit: listLimit.value,
-              extensions: extensions.value,
-              recursive: recursive.value,
-              scanDepth: scanDepth.value,
-            });
-            const nextItems = data.items || [];
-            outputItems.value = outputItems.value.concat(nextItems);
-            cursor.value = data.cursor ?? null;
-            hasMoreOutput.value = Boolean(cursor.value) && nextItems.length >= listLimit.value;
-            syncSelection(outputItems.value, outputSelection);
-          } catch (err) {
-            console.error(err);
-            showToast(appInstance, {
-              severity: "error",
-              summary: "Assets+",
-              detail: "Не удалось подгрузить ассеты.",
-              life: 3000,
-            });
-          } finally {
-            isLoadingMore.value = false;
-          }
-        };
-
-        const mergeNewItems = (nextItems) => {
-          if (!nextItems.length) {
-            return;
-          }
-          const existing = new Set(outputItems.value.map((item) => item.relpath));
-          const uniqueNew = nextItems.filter((item) => !existing.has(item.relpath));
-          if (uniqueNew.length) {
-            outputItems.value = uniqueNew.concat(outputItems.value);
-          }
-        };
-
-        const pollForUpdates = async () => {
-          if (activeTab.value !== "output") {
-            return;
-          }
-          if (!cursor.value) {
-            await fetchOutputList();
-            return;
-          }
-          try {
-            const data = await fetchList({
-              cursor: cursor.value,
-              limit: listLimit.value,
-              extensions: extensions.value,
-              recursive: recursive.value,
-              scanDepth: scanDepth.value,
-            });
-            const nextItems = data.items || [];
-            mergeNewItems(nextItems);
-            cursor.value = data.cursor ?? cursor.value;
-            syncSelection(outputItems.value, outputSelection);
-          } catch (err) {
-            console.error(err);
-          }
-        };
-
-        const assets = computed(() => {
-          const source = activeTab.value === "output" ? "output" : "input";
-          const list = source === "output" ? outputItems.value : inputItems.value;
-          return (list || []).map((item) => {
-            const relpath = item.relpath;
-            const previewUrl =
-              source === "output"
-                ? buildThumbUrl(relpath, thumbnailSize.value)
-                : buildViewUrl(relpath, "input");
-            return {
-              id: relpath,
-              name: relpath,
-              size: item.size || 0,
-              created_at: item.mtime ? new Date(item.mtime * 1000).toISOString() : new Date().toISOString(),
-              tags: [source],
-              preview_url: previewUrl,
-              user_metadata: {
-                relpath,
-                mtime: item.mtime,
-                size: item.size,
-                type: item.type,
-                has_workflow: item.has_workflow,
-                source,
-              },
-            };
-          });
-        });
-
-        const filteredAssets = computed(() => {
-          const query = searchQuery.value.trim().toLowerCase();
-          let result = assets.value;
-          if (query) {
-            result = result.filter((asset) => asset.name.toLowerCase().includes(query));
-          }
-          if (mediaTypeFilters.value.length) {
-            result = result.filter((asset) =>
-              mediaTypeFilters.value.includes(asset.user_metadata?.type || "image")
-            );
-          }
-          return result;
-        });
-
-        const sortedAssets = computed(() => {
-          const sorted = [...filteredAssets.value];
-          sorted.sort((a, b) => {
-            const aTime = a.user_metadata?.mtime ?? 0;
-            const bTime = b.user_metadata?.mtime ?? 0;
-            if (sortBy.value === "oldest") {
-              return aTime - bTime;
-            }
-            return bTime - aTime;
-          });
-          return sorted;
-        });
-
-        const displayAssets = computed(() => sortedAssets.value);
-
-        const mediaAssetsWithKey = computed(() =>
-          displayAssets.value.map((asset) => ({ ...asset, key: asset.id }))
-        );
-
-        const galleryItems = computed(() => displayAssets.value.map(buildGalleryItem));
-
-        const hasSelection = computed(() => selectedIds.value.size > 0);
-
-        const selectedAssets = computed(() =>
-          displayAssets.value.filter((asset) => selectedIds.value.has(asset.id))
-        );
-
-        const totalOutputCount = computed(() => selectedIds.value.size);
-
-        const hasSingleSelection = computed(() => selectedAssets.value.length === 1);
-
-        const workflowMetadataCache = new Map();
-        const selectedWorkflowAvailable = ref(false);
-
-        const resolveWorkflowFromAsset = (asset) => {
-          if (!asset) return null;
-          const directWorkflow = asset.user_metadata?.workflow;
-          if (directWorkflow) {
-            return normalizeWorkflow(directWorkflow);
-          }
-          const cached = workflowMetadataCache.get(asset.id);
-          if (cached?.workflow) {
-            return normalizeWorkflow(cached.workflow);
-          }
-          return null;
-        };
-
-        const refreshWorkflowAvailability = async (asset) => {
-          if (!asset || asset.user_metadata?.source !== "output") {
-            selectedWorkflowAvailable.value = false;
-            return;
-          }
-          const cachedWorkflow = resolveWorkflowFromAsset(asset);
-          if (cachedWorkflow) {
-            selectedWorkflowAvailable.value = true;
-            return;
-          }
-          if (asset.user_metadata?.has_workflow === false) {
-            selectedWorkflowAvailable.value = false;
-            return;
-          }
-          try {
-            const payload = await fetchMetadata(asset.id);
-            const metadata = payload?.metadata ?? {};
-            workflowMetadataCache.set(asset.id, metadata);
-            selectedWorkflowAvailable.value = Boolean(normalizeWorkflow(metadata.workflow));
-          } catch (error) {
-            console.error(error);
-            selectedWorkflowAvailable.value = false;
-          }
-        };
-
-        const selectedAssetHasWorkflow = computed(
-          () => hasSingleSelection.value && selectedWorkflowAvailable.value
-        );
-
-        const isSelected = (assetId) => selectedIds.value.has(assetId);
-
-        const toggleSelection = (asset) => {
-          const selectionRef = activeTab.value === "output" ? outputSelection : inputSelection;
-          const next = new Set(selectionRef.value);
-          if (next.has(asset.id)) {
-            next.delete(asset.id);
-          } else {
-            next.add(asset.id);
-          }
-          selectionRef.value = next;
-        };
-
-        const clearSelection = () => {
-          outputSelection.value = new Set();
-          inputSelection.value = new Set();
-        };
-
-        const handleAssetSelect = (asset) => {
-          toggleSelection(asset);
-        };
-
-        const handleEmptySpaceClick = (event) => {
-          const target = event.target;
-          if (target?.closest?.("[data-asset-card]")) {
-            return;
-          }
-          clearSelection();
-        };
-
-        const handleZoomClick = (asset) => {
-          const index = displayAssets.value.findIndex((item) => item.id === asset.id);
-          if (index >= 0) {
-            galleryActiveIndex.value = index;
-          }
-        };
-
-        const confirmDeleteSelected = async () => {
-          if (!selectedAssets.value.length) {
-            return false;
-          }
-          const mode = deleteMode.value;
-          const dialogService = appInstance?.extensionManager?.dialog;
-          const message =
-            mode === "hide"
-              ? "Скрыть выбранные ассеты из списка?"
-              : "Удалить выбранные ассеты с диска?";
-          const itemList = selectedAssets.value.map((asset) => asset.name);
-          if (dialogService?.confirm) {
-            const result = await dialogService.confirm({
-              title: "Подтверждение удаления",
-              message,
-              type: mode === "hide" ? "default" : "delete",
-              itemList,
-            });
-            return result === true;
-          }
-          return window.confirm(message);
-        };
-
-        const handleDeleteSelected = async () => {
-          if (activeTab.value !== "output") {
-            return;
-          }
-          const confirmed = await confirmDeleteSelected();
-          if (!confirmed) {
-            return;
-          }
-          try {
-            const relpaths = selectedAssets.value.map((asset) => asset.id);
-            const mode = deleteMode.value;
-            await deleteAssets(relpaths, mode);
-            outputItems.value = outputItems.value.filter((item) => !relpaths.includes(item.relpath));
-            clearSelection();
-            await fetchOutputList();
-          } catch (err) {
-            console.error(err);
-            showToast(appInstance, {
-              severity: "error",
-              summary: "Assets+",
-              detail: "Не удалось удалить ассеты.",
-              life: 3000,
-            });
-          }
-        };
-
-        const triggerDownload = (url, filename) => {
-          const link = document.createElement("a");
-          link.href = url;
-          link.download = filename;
-          link.rel = "noopener";
-          link.target = "_blank";
-          document.body.appendChild(link);
-          link.click();
-          link.remove();
-        };
-
-        const handleDownloadSelected = () => {
-          selectedAssets.value.forEach((asset) => {
-            const type = asset.user_metadata?.source === "input" ? "input" : "output";
-            triggerDownload(buildViewUrl(asset.id, type), asset.name);
-          });
-        };
-
-        const openWorkflow = async (replaceCurrent) => {
-          if (!hasSingleSelection.value || activeTab.value !== "output") {
-            return;
-          }
-          const asset = selectedAssets.value[0];
-          try {
-            const { workflow, filename } = await extractWorkflowFromAsset(asset, {
-              fetchMetadataFallback: async (relpath) => {
-                const payload = await fetchMetadata(relpath);
-                const metadata = payload?.metadata ?? {};
-                workflowMetadataCache.set(relpath, metadata);
-                return metadata;
-              },
-            });
-            if (!workflow) {
-              showToast(appInstance, {
-                severity: "warn",
-                summary: "Assets+",
-                detail: "Workflow metadata не найдена.",
-                life: 2500,
-              });
-              return;
-            }
-            if (replaceCurrent) {
-              const workflowStore = resolveWorkflowStore(appInstance);
-              const activeWorkflow = workflowStore?.activeWorkflow ?? null;
-              await appInstance?.loadGraphData?.(workflow, true, true, activeWorkflow);
-              showToast(appInstance, {
-                severity: "success",
-                summary: "Assets+",
-                detail: "Workflow заменён в текущей вкладке.",
-                life: 2000,
-              });
-              return;
-            }
-            const workflowActions = resolveWorkflowActionsService(appInstance);
-            if (workflowActions?.openWorkflowAction) {
-              const result = await workflowActions.openWorkflowAction(workflow, filename);
-              if (!result?.success) {
-                throw new Error(result?.error || "Failed to open workflow");
-              }
-              showToast(appInstance, {
-                severity: "success",
-                summary: "Assets+",
-                detail: "Workflow открыт в новой вкладке.",
-                life: 2000,
-              });
-              return;
-            }
-            const workflowStore = resolveWorkflowStore(appInstance);
-            if (workflowStore?.createTemporary && workflowStore?.openWorkflow) {
-              const temp = workflowStore.createTemporary(filename, workflow);
-              await workflowStore.openWorkflow(temp);
-              showToast(appInstance, {
-                severity: "success",
-                summary: "Assets+",
-                detail: "Workflow открыт в новой вкладке.",
-                life: 2000,
-              });
-              return;
-            }
-            await appInstance?.loadGraphData?.(workflow);
-          } catch (err) {
-            console.error(err);
-            showToast(appInstance, {
-              severity: "error",
-              summary: "Assets+",
-              detail: "Не удалось открыть workflow.",
-              life: 3000,
-            });
-          }
-        };
-
-        const handleApproachEnd = async () => {
-          if (activeTab.value === "output") {
-            await loadMore();
-          }
-        };
-
-        onMounted(async () => {
-          await refreshConfig();
-          registerSettingListeners();
-          const activeId = resolveActiveTabId();
-          const shouldAssumeActive = activeId === null;
-          setActiveState(shouldAssumeActive || activeId === SIDEBAR_TAB_ID);
-        });
-
-        onActivated(() => {
-          setActiveState(true);
-        });
-
-        onDeactivated(() => {
-          setActiveState(false);
-        });
-
-        onBeforeUnmount(() => {
-          stopPolling();
-        });
-
-        watch(
-          () => resolveActiveTabId(),
-          (nextId) => {
-            if (nextId === null) {
-              return;
-            }
-            setActiveState(nextId === SIDEBAR_TAB_ID);
-          }
-        );
-
-        watch(
-          () => pollSeconds.value,
-          () => {
-            if (activeTab.value === "output") {
-              stopPolling();
-              startPolling();
-            }
-          }
-        );
-
-        watch(
-          () => activeTab.value,
-          async (nextTab) => {
-            if (nextTab === "output") {
-              await fetchOutputList();
-              startPolling();
-            } else {
-              stopPolling();
-              await fetchInputList();
-            }
-          }
-        );
-
-        watch(
-          () => (hasSingleSelection.value ? selectedAssets.value[0]?.id : null),
-          async (nextId) => {
-            if (!nextId) {
-              selectedWorkflowAvailable.value = false;
-              return;
-            }
-            await refreshWorkflowAvailability(selectedAssets.value[0]);
-          }
-        );
-
-        return {
-          hasTabs,
-          hasNoResultsPlaceholder,
-          activeTab,
-          isLoadingOutput,
-          isLoadingInput,
-          isLoadingMore,
-          hasMoreOutput,
-          error,
-          deleteMode,
-          searchQuery,
-          sortBy,
-          mediaTypeFilters,
-          openContextMenuId,
-          mediaAssetsWithKey,
-          displayAssets,
-          galleryActiveIndex,
-          galleryItems,
-          hasSelection,
-          hasSingleSelection,
-          selectedAssetHasWorkflow,
-          totalOutputCount,
-          refreshActiveTab,
-          handleApproachEnd,
-          handleAssetSelect,
-          handleZoomClick,
-          handleEmptySpaceClick,
-          handleDeleteSelected,
-          handleDownloadSelected,
-          openWorkflow,
-          isSelected,
-        };
-      },
-      template: `
-        <SidebarTabTemplate :title="$t('sideToolbar.mediaAssets.title')">
-          <template #tool-buttons>
-            <div class="flex items-center gap-2">
-              <TabList v-if="hasTabs" v-model="activeTab">
-                <Tab class="font-inter" value="output">Generated+</Tab>
-                <Tab class="font-inter" value="input">Imported</Tab>
-              </TabList>
-              <button
-                class="rounded-md border border-transparent bg-secondary-background px-3 py-1 text-xs"
-                type="button"
-                @click="refreshActiveTab"
-                :disabled="activeTab === 'output' ? isLoadingOutput : isLoadingInput"
-              >
-                Refresh
-              </button>
-            </div>
-          </template>
-          <template #header>
-            <div class="flex items-center justify-between gap-2 px-2 pb-2 2xl:px-4">
-              <MediaAssetFilterBar
-                v-model:search-query="searchQuery"
-                v-model:sort-by="sortBy"
-                v-model:media-type-filters="mediaTypeFilters"
-                :show-generation-time-sort="activeTab === 'output'"
-              />
-              <select
-                v-if="activeTab === 'output'"
-                class="rounded-md border border-secondary-border bg-transparent px-2 py-1 text-xs"
-                v-model="deleteMode"
-              >
-                <option value="trash">Delete to Trash</option>
-                <option value="delete">Delete Permanently</option>
-                <option value="hide">Hide Only</option>
-              </select>
-            </div>
-            <div class="border-b border-secondary-border" />
-          </template>
-          <template #body>
-            <div v-if="(activeTab === 'output' ? isLoadingOutput : isLoadingInput) && !displayAssets.length">
-              <ProgressSpinner class="absolute left-1/2 w-[50px] -translate-x-1/2" />
-            </div>
-            <div
-              v-else-if="!displayAssets.length && !(activeTab === 'output' ? isLoadingOutput : isLoadingInput)"
-              class="px-4 py-3 text-sm text-muted-foreground"
-            >
-              <NoResultsPlaceholder
-                v-if="hasNoResultsPlaceholder"
-                icon="pi pi-info-circle"
-                :title="activeTab === 'input' ? 'Нет импортированных файлов.' : 'Нет сгенерированных файлов.'"
-                message="Файлы не найдены."
-              />
-              <span v-else>Нет ассетов.</span>
-            </div>
-            <div v-else class="relative size-full" @click="handleEmptySpaceClick">
-              <VirtualGrid
-                :items="mediaAssetsWithKey"
-                :grid-style="{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
-                  padding: '0 0.5rem',
-                  gap: '0.5rem'
-                }"
-                @approach-end="handleApproachEnd"
-              >
-                <template #item="{ item }">
-                  <div data-asset-card>
-                    <MediaAssetCard
-                      :asset="item"
-                      :selected="isSelected(item.id)"
-                      :show-output-count="false"
-                      :show-delete-button="false"
-                      :open-context-menu-id="openContextMenuId"
-                      @click="handleAssetSelect(item)"
-                      @zoom="handleZoomClick(item)"
-                      @context-menu-opened="openContextMenuId = item.id"
-                    />
-                  </div>
-                </template>
-              </VirtualGrid>
-              <div v-if="isLoadingMore" class="px-4 py-3 text-xs text-muted-foreground">
-                Загружаем ещё...
-              </div>
-            </div>
-          </template>
-          <template #footer>
-            <div
-              v-if="hasSelection"
-              class="flex h-18 items-center justify-between gap-2 border-t border-secondary-border px-4"
-            >
-              <div class="text-sm text-muted-foreground">
-                Выбрано: {{ totalOutputCount }}
-              </div>
-              <div class="flex flex-wrap gap-2">
-                <button
-                  class="rounded-md border border-secondary-border bg-secondary-background px-3 py-1 text-xs"
-                  type="button"
-                  @click="handleDownloadSelected"
-                >
-                  Скачать
-                </button>
-                <button
-                  v-if="activeTab === 'output'"
-                  class="rounded-md border border-secondary-border bg-secondary-background px-3 py-1 text-xs"
-                  type="button"
-                  @click="handleDeleteSelected"
-                >
-                  Удалить
-                </button>
-                <button
-                  v-if="activeTab === 'output' && hasSingleSelection"
-                  class="rounded-md border border-secondary-border bg-secondary-background px-3 py-1 text-xs"
-                  type="button"
-                  :disabled="!selectedAssetHasWorkflow"
-                  @click="openWorkflow(false)"
-                >
-                  Open workflow (new tab)
-                </button>
-                <button
-                  v-if="activeTab === 'output' && hasSingleSelection"
-                  class="rounded-md border border-secondary-border bg-secondary-background px-3 py-1 text-xs"
-                  type="button"
-                  :disabled="!selectedAssetHasWorkflow"
-                  @click="openWorkflow(true)"
-                >
-                  Replace current workflow
-                </button>
-              </div>
-            </div>
-          </template>
-        </SidebarTabTemplate>
-
-        <ResultGallery
-          v-model:active-index="galleryActiveIndex"
-          :all-gallery-items="galleryItems"
-        />
-      `,
-    };
-
-    return markRaw(component);
+const boot = async () => {
+  const appInstance = await waitForApp();
+  if (!appInstance) {
+    warn(t("log.app_wait_failed"));
+    return;
   }
 
-  function registerExtension() {
-    const app = getApp();
-    if (!app?.registerExtension) {
-      setTimeout(registerExtension, 100);
-      return;
-    }
+  const translationsList = await loadTranslationsList();
+  const languageSetting = String(getSettingValue(appInstance, SETTINGS.language, DEFAULT_LANGUAGE));
+  const selectedLanguage = languageSetting || DEFAULT_LANGUAGE;
+  await applyLanguage(selectedLanguage, { force: true });
+  const languageOptions = buildLanguageOptions(translationsList);
 
-    app.registerExtension({
-      name: EXTENSION_NAME,
-      async setup(appInstance) {
-        const vue = getVue();
-        if (!vue?.markRaw) {
-          console.warn("Assets+: Vue is not available, sidebar tab not registered.");
-          return;
-        }
-        if (!appInstance?.extensionManager?.registerSidebarTab) {
-          console.warn("Assets+: extensionManager.registerSidebarTab is not available.");
-          return;
-        }
+  appInstance.registerExtension({
+    name: EXTENSION_NAME,
+    settings: buildSettingsSchema(t, languageOptions, (newValue) => {
+      const nextLanguage = String(newValue || DEFAULT_LANGUAGE);
+      if (nextLanguage === activeLanguage) return;
+      applyLanguage(nextLanguage).catch((error) => {
+        warn(t("log.translation_load_failed", { language: nextLanguage }), error);
+      });
+    }),
+    setup(app) {
+      registerSidebarTab(app);
+    },
+  });
+};
 
-        try {
-          const config = await fetchConfig();
-          registerSettings(appInstance, config);
-        } catch (error) {
-          registerSettings(appInstance, {});
-        }
-
-        const component = createAssetsPlusComponent(appInstance, vue);
-        if (appInstance.extensionManager.unregisterSidebarTab) {
-          appInstance.extensionManager.unregisterSidebarTab("assets");
-        }
-
-        appInstance.extensionManager.registerSidebarTab({
-          id: "assets",
-          icon: "icon-[comfy--image-ai-edit]",
-          title: "sideToolbar.assets",
-          tooltip: "sideToolbar.assets",
-          label: "sideToolbar.labels.assets",
-          component,
-          type: "vue",
-        });
-      },
-    });
-  }
-
-  registerExtension();
-})();
+boot();
