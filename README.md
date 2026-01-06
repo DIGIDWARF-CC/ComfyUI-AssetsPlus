@@ -3,7 +3,7 @@
   <img src="/meta/img/logo_1024x700.png" alt="ai-generated assets-plus logo" width="600"/>
 </p>
 
-Assets+ is an extension for ComfyUI that adds a **Generated+** tab and provides a
+Assets+ is an extension for ComfyUI that adds the **Assets+ Explorer** sidebar panel and provides a
 persistent overview of the output directory via the `/assets_plus` API.
 
 ## Installation
@@ -17,12 +17,12 @@ persistent overview of the output directory via the `/assets_plus` API.
 The frontend part is located at `custom_nodes/ComfyUI-AssetsPlus/web/assets_plus.js` and will be
 loaded automatically.
 
-## How to enable Generated+
+## How to open Assets+ Explorer
 
-1. Open the **Media Assets** sidebar panel.
-2. Switch to the **Generated+** tab (the icon with multiple images).
+1. Open the ComfyUI sidebar.
+2. Click the **Assets+ Explorer** tab (folder icon).
 
-If the tab doesn’t show up:
+If the panel doesn’t show up:
 - check that the folder is named `custom_nodes/ComfyUI-AssetsPlus/`;
 - make sure ComfyUI was restarted after installation.
 
@@ -39,6 +39,11 @@ Available options:
 - `poll_seconds`: auto-refresh interval (seconds).
 - `default_delete_mode`: `"trash" | "delete" | "hide"`.
 - `scan_depth`: depth limit for recursive scanning (`null` = no limit).
+
+UI settings (ComfyUI Settings → Assets+ Explorer):
+- **Assets+ confirm deletions** — toggle confirmation dialogs for delete/hide actions.
+- **Assets+ show overlay navigation hint** — toggle the on-screen navigation hint in the lens overlay.
+- **Assets+ keep overlay open when opening/replacing workflow** — keep the lens overlay open after workflow actions.
 
 Example:
 ```json
@@ -59,6 +64,9 @@ Example:
 * Thumbnails via `/assets_plus/output/thumb`.
 * Workflow/prompt metadata via `/assets_plus/output/meta`.
 * Deleting from disk (trash/delete) or hiding (hide) with confirmation.
+* Full-screen lens overlay with navigation, workflow actions, zoom/pan controls, and keybindings registered in ComfyUI.
+* Assets+ shortcuts tab in the ComfyUI Shortcuts panel for overlay navigation actions.
+* Multi-selection via checkboxes on each asset tile.
 * Auto-refresh list (polling every 5 seconds).
 
 ## Deletion modes
@@ -83,13 +91,14 @@ If there’s no metadata, the buttons will be disabled.
 * Asset source is ComfyUI’s output directory only (no arbitrary paths).
 * Videos (`.mp4/.webm`) are served as-is; no thumbnails are generated.
 * Auto-refresh is implemented via polling (interval in `poll_seconds`).
+* Delete confirmations can be disabled in Settings (Assets+ confirm deletions).
 
 ## ComfyUI-Manager compatibility
 
 The extension structure matches Manager requirements:
 
 * `__init__.py` exports `WEB_DIRECTORY` so the frontend is picked up automatically.
-* `web/assets_plus.js` registers the **Generated+** tab via `registerSidebarTab`.
+* `web/assets_plus.js` registers the **Assets+ Explorer** tab via `registerSidebarTab`.
 * No extra installation steps are needed besides restarting ComfyUI.
 
 ## Notes

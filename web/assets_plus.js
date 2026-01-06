@@ -11,8 +11,40 @@ const DEFAULT_POLL_SECONDS = 5;
 const DEFAULT_LIST_LIMIT = 200;
 const DEFAULT_THUMB_SIZE = 256;
 const DEFAULT_DELETE_MODE = "trash";
+const DEFAULT_CONFIRM_DELETE = true;
+const DEFAULT_SHOW_OVERLAY_HELP = true;
+const DEFAULT_KEEP_OVERLAY_OPEN_ON_WORKFLOW = false;
 const DEFAULT_LANGUAGE = "en";
 const SETTINGS_CATEGORY = "Assets+";
+const ASSETS_PLUS_SHORTCUTS_CATEGORY = "assets-plus";
+const ASSETS_PLUS_SHORTCUTS_TAB_ID = "shortcuts-assets-plus";
+const ASSETS_PLUS_SHORTCUTS_TAB_CLASS = "assets-plus";
+const ASSETS_PLUS_SHORTCUTS_SUBCATEGORY = "overlay";
+const OVERLAY_COMMANDS = {
+  first: "AssetsPlus.OverlayNavigateFirst",
+  prev: "AssetsPlus.OverlayNavigatePrevious",
+  last: "AssetsPlus.OverlayNavigateLast",
+  next: "AssetsPlus.OverlayNavigateNext",
+  delete: "AssetsPlus.OverlayDelete",
+};
+const OVERLAY_KEYBINDINGS = [
+  {
+    commandId: OVERLAY_COMMANDS.prev,
+    combo: { key: "a" },
+  },
+  {
+    commandId: OVERLAY_COMMANDS.next,
+    combo: { key: "d" },
+  },
+  {
+    commandId: OVERLAY_COMMANDS.last,
+    combo: { key: "s" },
+  },
+  {
+    commandId: OVERLAY_COMMANDS.delete,
+    combo: { key: "x" },
+  },
+];
 
 const SETTINGS = {
   pollSeconds: "AssetsPlus.PollSeconds",
@@ -21,6 +53,9 @@ const SETTINGS = {
   scanDepth: "AssetsPlus.ScanDepth",
   deleteMode: "AssetsPlus.DeleteMode",
   thumbnailSize: "AssetsPlus.ThumbnailSize",
+  confirmDelete: "AssetsPlus.ConfirmDelete",
+  showOverlayHelp: "AssetsPlus.ShowOverlayHelp",
+  keepOverlayOpenOnWorkflow: "AssetsPlus.KeepOverlayOpenOnWorkflow",
   language: "AssetsPlus.Language",
 };
 
@@ -33,13 +68,40 @@ const log = (...args) => console.log("[Assets+ Explorer]", ...args);
 const warn = (...args) => console.warn("[Assets+ Explorer]", ...args);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
 const resolveApp = () => window.app || window.comfyApp || window.comfy?.app || importedApp;
+
+const SHORTCUT_KEY_LABELS = {
+  Control: "Ctrl",
+  Meta: "Cmd",
+  ArrowUp: "↑",
+  ArrowDown: "↓",
+  ArrowLeft: "←",
+  ArrowRight: "→",
+  Backspace: "⌫",
+  Delete: "⌦",
+  Enter: "↵",
+  Escape: "Esc",
+  Tab: "⇥",
+  " ": "Space",
+};
+
+const formatShortcutKey = (key) => SHORTCUT_KEY_LABELS[key] || key;
+
+const getKeySequences = (keybinding) => {
+  if (!keybinding?.combo) return [];
+  if (typeof keybinding.combo.getKeySequences === "function") {
+    return keybinding.combo.getKeySequences();
+  }
+  return keybinding.combo.key ? [keybinding.combo.key] : [];
+};
 
 let activeTranslations = {};
 let fallbackTranslations = {};
 let activeLanguage = DEFAULT_LANGUAGE;
 let explorerInstance = null;
+let shortcutsPanelInstance = null;
 
 const t = (key, vars = {}) => {
   const template = activeTranslations?.[key] ?? fallbackTranslations?.[key] ?? key;
@@ -117,6 +179,39 @@ const buildLanguageOptions = (translations) => {
   });
 };
 
+const buildOverlayCommands = () => [
+  {
+    id: OVERLAY_COMMANDS.first,
+    label: () => t("overlay.hint.first"),
+    category: ASSETS_PLUS_SHORTCUTS_CATEGORY,
+    function: () => explorerInstance?.handleOverlayCommand("first"),
+  },
+  {
+    id: OVERLAY_COMMANDS.prev,
+    label: () => t("overlay.hint.previous"),
+    category: ASSETS_PLUS_SHORTCUTS_CATEGORY,
+    function: () => explorerInstance?.handleOverlayCommand("prev"),
+  },
+  {
+    id: OVERLAY_COMMANDS.last,
+    label: () => t("overlay.hint.last"),
+    category: ASSETS_PLUS_SHORTCUTS_CATEGORY,
+    function: () => explorerInstance?.handleOverlayCommand("last"),
+  },
+  {
+    id: OVERLAY_COMMANDS.next,
+    label: () => t("overlay.hint.next"),
+    category: ASSETS_PLUS_SHORTCUTS_CATEGORY,
+    function: () => explorerInstance?.handleOverlayCommand("next"),
+  },
+  {
+    id: OVERLAY_COMMANDS.delete,
+    label: () => t("actions.delete"),
+    category: ASSETS_PLUS_SHORTCUTS_CATEGORY,
+    function: () => explorerInstance?.handleOverlayCommand("delete"),
+  },
+];
+
 const applyLanguage = async (language, { force = false } = {}) => {
   const normalized = language || DEFAULT_LANGUAGE;
   if (!force && normalized === activeLanguage) {
@@ -129,6 +224,7 @@ const applyLanguage = async (language, { force = false } = {}) => {
       : await loadTranslationData(normalized);
   activeLanguage = normalized;
   explorerInstance?.updateTranslations?.();
+  shortcutsPanelInstance?.updateTranslations?.();
 };
 
 const buildSettingsSchema = (t, languageOptions, handleLanguageChange) => {
@@ -174,6 +270,24 @@ const buildSettingsSchema = (t, languageOptions, handleLanguageChange) => {
       ],
     }),
     withCategory({
+      id: SETTINGS.confirmDelete,
+      name: t("settings.confirm_delete"),
+      type: "boolean",
+      defaultValue: DEFAULT_CONFIRM_DELETE,
+    }),
+    withCategory({
+      id: SETTINGS.showOverlayHelp,
+      name: t("settings.show_overlay_help"),
+      type: "boolean",
+      defaultValue: DEFAULT_SHOW_OVERLAY_HELP,
+    }),
+    withCategory({
+      id: SETTINGS.keepOverlayOpenOnWorkflow,
+      name: t("settings.keep_overlay_open_on_workflow"),
+      type: "boolean",
+      defaultValue: DEFAULT_KEEP_OVERLAY_OPEN_ON_WORKFLOW,
+    }),
+    withCategory({
       id: SETTINGS.thumbnailSize,
       name: t("settings.thumbnail_size"),
       type: "number",
@@ -194,6 +308,110 @@ const buildSettingsSchema = (t, languageOptions, handleLanguageChange) => {
     }),
   ];
 };
+
+class AssetsPlusShortcutsPanel {
+  constructor(appInstance, container) {
+    this.app = appInstance;
+    this.container = container;
+    this.render();
+  }
+
+  getCommands() {
+    const commands = this.app?.extensionManager?.command?.commands || [];
+    const commandsById = new Map(commands.map((command) => [command.id, command]));
+    return Object.values(OVERLAY_COMMANDS)
+      .map((id) => commandsById.get(id))
+      .filter(Boolean);
+  }
+
+  buildShortcutItem(command) {
+    const keybinding = command?.keybinding;
+    if (!keybinding) return null;
+    const sequences = getKeySequences(keybinding);
+    if (!sequences.length) return null;
+
+    const item = document.createElement("div");
+    item.className =
+      "shortcut-item flex items-center justify-between rounded py-2 transition-colors duration-200";
+
+    const info = document.createElement("div");
+    info.className = "shortcut-info grow pr-4";
+    const name = document.createElement("div");
+    name.className = "shortcut-name text-sm font-medium";
+    name.textContent = command?.label || command?.id || "";
+    info.append(name);
+
+    const keybindingDisplay = document.createElement("div");
+    keybindingDisplay.className = "keybinding-display shrink-0";
+    const keybindingCombo = document.createElement("div");
+    keybindingCombo.className = "keybinding-combo flex gap-1";
+    keybindingCombo.setAttribute("aria-label", `Keyboard shortcut: ${sequences.join(" + ")}`);
+
+    sequences.forEach((key) => {
+      const badge = document.createElement("span");
+      badge.className =
+        "key-badge min-w-6 rounded bg-muted-background px-2 py-1 text-center font-mono text-xs";
+      badge.textContent = formatShortcutKey(key);
+      keybindingCombo.append(badge);
+    });
+
+    keybindingDisplay.append(keybindingCombo);
+    item.append(info, keybindingDisplay);
+    return item;
+  }
+
+  render() {
+    this.container.innerHTML = "";
+
+    const root = document.createElement("div");
+    root.className = `flex h-full flex-col ${ASSETS_PLUS_SHORTCUTS_TAB_CLASS}`;
+
+    const content = document.createElement("div");
+    content.className = "flex h-full flex-col p-4";
+
+    const scroll = document.createElement("div");
+    scroll.className = "min-h-0 flex-1 overflow-auto";
+
+    const shortcutsList = document.createElement("div");
+    shortcutsList.className = `shortcuts-list flex justify-center ${ASSETS_PLUS_SHORTCUTS_TAB_CLASS}`;
+
+    const grid = document.createElement("div");
+    grid.className = "grid h-full w-[90%] grid-cols-1 gap-4 md:grid-cols-3 md:gap-24";
+
+    const column = document.createElement("div");
+    column.className = "flex flex-col";
+
+    const title = document.createElement("h3");
+    title.className =
+      "subcategory-title mb-4 text-xs font-bold tracking-wide text-text-secondary uppercase";
+    title.textContent = t(`shortcuts.assets_plus.${ASSETS_PLUS_SHORTCUTS_SUBCATEGORY}`);
+
+    const list = document.createElement("div");
+    list.className = "flex flex-col gap-1";
+
+    this.getCommands()
+      .map((command) => this.buildShortcutItem(command))
+      .filter(Boolean)
+      .forEach((item) => list.append(item));
+
+    column.append(title, list);
+    grid.append(column);
+    shortcutsList.append(grid);
+    scroll.append(shortcutsList);
+    content.append(scroll);
+    root.append(content);
+    this.container.append(root);
+  }
+
+  updateTranslations() {
+    this.render();
+  }
+
+  destroy() {
+    this.container.innerHTML = "";
+  }
+}
+
 const buildViewUrl = (relpath, directory) => {
   const segments = relpath.split("/");
   const filename = segments.pop() ?? relpath;
@@ -327,6 +545,10 @@ const createStyleTag = () => {
       border-radius: 6px;
       cursor: pointer;
     }
+    .assets-plus-button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
     .assets-plus-input {
       width: 100%;
       padding: 6px 8px;
@@ -353,10 +575,21 @@ const createStyleTag = () => {
       flex-direction: column;
       cursor: pointer;
       transition: border 0.15s ease, box-shadow 0.15s ease;
+      position: relative;
     }
     .assets-plus-card.selected {
       border-color: var(--assets-plus-accent);
       box-shadow: 0 0 0 1px var(--assets-plus-accent);
+    }
+    .assets-plus-checkbox {
+      position: absolute;
+      top: 6px;
+      left: 6px;
+      width: 16px;
+      height: 16px;
+      accent-color: var(--assets-plus-accent);
+      z-index: 2;
+      cursor: pointer;
     }
     .assets-plus-thumb {
       width: 100%;
@@ -411,6 +644,209 @@ const createStyleTag = () => {
     .assets-plus-actions.active {
       display: flex;
     }
+    .assets-plus-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.85);
+      display: flex;
+      flex-direction: column;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.2s ease;
+      z-index: 9999;
+      color: var(--fg-color, #e5e7eb);
+    }
+    .assets-plus-overlay.active {
+      opacity: 1;
+      visibility: visible;
+    }
+    .assets-plus-overlay-top {
+      display: flex;
+      align-items: center;
+      padding: 10px 18px;
+      background: rgba(0, 0, 0, 0.65);
+      backdrop-filter: blur(6px);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      gap: 12px;
+    }
+    .assets-plus-overlay-info {
+      font-size: 13px;
+      opacity: 0.85;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+      flex: 1;
+      min-width: 0;
+    }
+    .assets-plus-overlay-top-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-left: auto;
+    }
+    .assets-plus-icon-button {
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      background: rgba(0, 0, 0, 0.4);
+      color: inherit;
+      padding: 6px 8px;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    .assets-plus-icon-button.workflow-open {
+      border-color: rgba(140, 220, 170, 0.6);
+      box-shadow: 0 0 0 1px rgba(140, 220, 170, 0.2) inset;
+    }
+    .assets-plus-icon-button.workflow-replace {
+      border-color: rgba(235, 200, 120, 0.7);
+      box-shadow: 0 0 0 1px rgba(235, 200, 120, 0.2) inset;
+    }
+    .assets-plus-icon-button:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    .assets-plus-icon-button .pi {
+      font-size: 14px;
+    }
+    .assets-plus-overlay-close {
+      border: none;
+      background: transparent;
+      color: inherit;
+      font-size: 24px;
+      cursor: pointer;
+      padding: 4px 10px;
+    }
+    .assets-plus-overlay-body {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      padding: 18px;
+    }
+    .assets-plus-overlay-media {
+      flex: 1;
+      max-height: 100%;
+      max-width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      position: relative;
+    }
+    .assets-plus-overlay-image,
+    .assets-plus-overlay-video {
+      max-width: 100%;
+      max-height: 100%;
+      transform-origin: center center;
+      user-select: none;
+    }
+    .assets-plus-overlay-image.zoomable {
+      cursor: grab;
+    }
+    .assets-plus-overlay-image.zoomable.grabbing {
+      cursor: grabbing;
+    }
+    .assets-plus-overlay-nav {
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      background: rgba(0, 0, 0, 0.4);
+      color: inherit;
+      font-size: 24px;
+      padding: 6px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    .assets-plus-overlay-nav:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    .assets-plus-overlay-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      padding: 12px 18px 18px;
+      justify-content: center;
+    }
+    .assets-plus-overlay-actions .assets-plus-button {
+      background: rgba(0, 0, 0, 0.4);
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+    .assets-plus-overlay-reset {
+      position: absolute;
+      right: 24px;
+      bottom: 24px;
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      background: rgba(0, 0, 0, 0.6);
+      color: inherit;
+      padding: 6px 10px;
+      border-radius: 8px;
+      cursor: pointer;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease;
+    }
+    .assets-plus-overlay-reset.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .assets-plus-overlay-hint {
+      position: absolute;
+      left: 20px;
+      bottom: 20px;
+      display: grid;
+      grid-template-columns: repeat(3, auto);
+      gap: 6px;
+      padding: 10px;
+      border-radius: 14px;
+      background: rgba(8, 12, 20, 0.55);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+      backdrop-filter: blur(8px);
+      opacity: 0.55;
+      transition: opacity 0.2s ease;
+      pointer-events: none;
+      z-index: 10001;
+    }
+    .assets-plus-overlay-hint:has(.assets-plus-hint-button:hover) {
+      opacity: 0.95;
+    }
+    .assets-plus-hint-button {
+      pointer-events: auto;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      background: rgba(0, 0, 0, 0.35);
+      color: inherit;
+      padding: 6px 8px;
+      border-radius: 10px;
+      font-size: 12px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      min-width: 44px;
+      min-height: 34px;
+      justify-content: center;
+    }
+    .assets-plus-hint-button:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    .assets-plus-hint-button.danger {
+      background: rgba(255, 140, 0, 0.25);
+      border-color: rgba(255, 140, 0, 0.8);
+    }
+    .assets-plus-hint-key {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 11px;
+      padding: 2px 6px;
+      border-radius: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      background: rgba(0, 0, 0, 0.4);
+      min-width: 18px;
+      height: 18px;
+    }
   `;
   return style;
 };
@@ -428,8 +864,20 @@ class AssetsPlusExplorer {
       selected: new Set(),
       config: null,
       pollId: null,
+      overlay: {
+        relpath: null,
+        zoom: 1,
+        offsetX: 0,
+        offsetY: 0,
+        panning: false,
+        panStartX: 0,
+        panStartY: 0,
+        panOriginX: 0,
+        panOriginY: 0,
+      },
     };
     this.elements = {};
+    this.overlayPanHandler = null;
     this.init();
   }
 
@@ -501,8 +949,134 @@ class AssetsPlusExplorer {
     root.appendChild(grid);
     root.appendChild(actionsBar);
 
+    const overlay = createElement("div", { className: "assets-plus-overlay" });
+    const overlayTop = createElement("div", { className: "assets-plus-overlay-top" });
+    const overlayInfo = createElement("div", { className: "assets-plus-overlay-info" });
+    const overlayTopActions = createElement("div", { className: "assets-plus-overlay-top-actions" });
+    const overlayDownload = createElement("button", {
+      className: "assets-plus-icon-button",
+      attrs: { title: t("actions.download"), "aria-label": t("actions.download") },
+    });
+    overlayDownload.innerHTML = '<i class="pi pi-download"></i>';
+    const overlayOpenWorkflow = createElement("button", {
+      className: "assets-plus-icon-button workflow-open",
+      attrs: {
+        title: t("actions.open_workflow_new_tab"),
+        "aria-label": t("actions.open_workflow_new_tab"),
+      },
+    });
+    overlayOpenWorkflow.innerHTML = '<i class="pi pi-external-link"></i>';
+    const overlayReplaceWorkflow = createElement("button", {
+      className: "assets-plus-icon-button workflow-replace",
+      attrs: {
+        title: t("actions.replace_workflow"),
+        "aria-label": t("actions.replace_workflow"),
+      },
+    });
+    overlayReplaceWorkflow.innerHTML = '<i class="pi pi-arrow-right-arrow-left"></i>';
+    const overlayClose = createElement("button", {
+      className: "assets-plus-overlay-close",
+      text: "×",
+      attrs: { "aria-label": t("overlay.close") },
+    });
+    overlayTopActions.appendChild(overlayDownload);
+    overlayTopActions.appendChild(overlayOpenWorkflow);
+    overlayTopActions.appendChild(overlayReplaceWorkflow);
+    overlayTop.appendChild(overlayInfo);
+    overlayTop.appendChild(overlayTopActions);
+    overlayTop.appendChild(overlayClose);
+
+    const overlayBody = createElement("div", { className: "assets-plus-overlay-body" });
+    const overlayPrev = createElement("button", {
+      className: "assets-plus-overlay-nav",
+      text: "‹",
+      attrs: { "aria-label": t("overlay.previous") },
+    });
+    const overlayNext = createElement("button", {
+      className: "assets-plus-overlay-nav",
+      text: "›",
+      attrs: { "aria-label": t("overlay.next") },
+    });
+    const overlayMedia = createElement("div", { className: "assets-plus-overlay-media" });
+    const overlayImage = createElement("img", {
+      className: "assets-plus-overlay-image",
+      attrs: { draggable: "false" },
+    });
+    const overlayVideo = createElement("video", {
+      className: "assets-plus-overlay-video",
+      attrs: { controls: "true" },
+    });
+    overlayMedia.appendChild(overlayImage);
+    overlayMedia.appendChild(overlayVideo);
+    overlayBody.appendChild(overlayPrev);
+    overlayBody.appendChild(overlayMedia);
+    overlayBody.appendChild(overlayNext);
+
+    const overlayReset = createElement("button", {
+      className: "assets-plus-overlay-reset",
+      text: t("overlay.reset_zoom"),
+    });
+
+    overlay.appendChild(overlayTop);
+    overlay.appendChild(overlayBody);
+    overlay.appendChild(overlayReset);
+
+    const overlayHint = createElement("div", { className: "assets-plus-overlay-hint" });
+    const hintUp = createElement("button", {
+      className: "assets-plus-hint-button",
+      attrs: { "data-action": "first", title: t("overlay.hint.first") },
+    });
+    const hintUpKey = createElement("span", { className: "assets-plus-hint-key" });
+    const hintUpIcon = createElement("i", { className: "pi pi-angle-double-up" });
+    hintUp.appendChild(hintUpKey);
+    hintUp.appendChild(hintUpIcon);
+    const hintLeft = createElement("button", {
+      className: "assets-plus-hint-button",
+      attrs: { "data-action": "prev", title: t("overlay.hint.previous") },
+    });
+    const hintLeftKey = createElement("span", { className: "assets-plus-hint-key" });
+    const hintLeftIcon = createElement("i", { className: "pi pi-angle-left" });
+    hintLeft.appendChild(hintLeftKey);
+    hintLeft.appendChild(hintLeftIcon);
+    const hintDown = createElement("button", {
+      className: "assets-plus-hint-button",
+      attrs: { "data-action": "last", title: t("overlay.hint.last") },
+    });
+    const hintDownKey = createElement("span", { className: "assets-plus-hint-key" });
+    const hintDownIcon = createElement("i", { className: "pi pi-angle-double-down" });
+    hintDown.appendChild(hintDownKey);
+    hintDown.appendChild(hintDownIcon);
+    const hintRight = createElement("button", {
+      className: "assets-plus-hint-button",
+      attrs: { "data-action": "next", title: t("overlay.hint.next") },
+    });
+    const hintRightKey = createElement("span", { className: "assets-plus-hint-key" });
+    const hintRightIcon = createElement("i", { className: "pi pi-angle-right" });
+    hintRight.appendChild(hintRightKey);
+    hintRight.appendChild(hintRightIcon);
+    const hintDelete = createElement("button", {
+      className: "assets-plus-hint-button danger",
+      attrs: { "data-action": "delete", title: t("actions.delete") },
+    });
+    const hintDeleteKey = createElement("span", { className: "assets-plus-hint-key" });
+    const hintDeleteIcon = createElement("i", { className: "pi pi-trash" });
+    hintDelete.appendChild(hintDeleteKey);
+    hintDelete.appendChild(hintDeleteIcon);
+    overlayHint.appendChild(createElement("span"));
+    overlayHint.appendChild(hintUp);
+    overlayHint.appendChild(createElement("span"));
+    overlayHint.appendChild(hintLeft);
+    overlayHint.appendChild(hintDown);
+    overlayHint.appendChild(hintRight);
+    overlayHint.appendChild(createElement("span"));
+    overlayHint.appendChild(hintDelete);
+    overlayHint.appendChild(createElement("span"));
+
+    overlay.appendChild(overlayHint);
+
     this.container.appendChild(createStyleTag());
     this.container.appendChild(root);
+    this.container.appendChild(overlay);
 
     this.elements = {
       root,
@@ -519,6 +1093,30 @@ class AssetsPlusExplorer {
       deleteButton,
       openWorkflowButton,
       replaceWorkflowButton,
+      overlay,
+      overlayInfo,
+      overlayClose,
+      overlayTopActions,
+      overlayPrev,
+      overlayNext,
+      overlayMedia,
+      overlayImage,
+      overlayVideo,
+      overlayDownload,
+      overlayOpenWorkflow,
+      overlayReplaceWorkflow,
+      overlayReset,
+      overlayHint,
+      hintUp,
+      hintLeft,
+      hintDown,
+      hintRight,
+      hintDelete,
+      hintUpKey,
+      hintLeftKey,
+      hintDownKey,
+      hintRightKey,
+      hintDeleteKey,
     };
 
     refreshButton.addEventListener("click", () => this.refreshList());
@@ -533,6 +1131,28 @@ class AssetsPlusExplorer {
     deleteButton.addEventListener("click", () => this.handleDelete());
     openWorkflowButton.addEventListener("click", () => this.openWorkflow(false));
     replaceWorkflowButton.addEventListener("click", () => this.openWorkflow(true));
+
+    overlayClose.addEventListener("click", () => this.closeOverlay());
+    overlayPrev.addEventListener("click", () => this.navigateOverlay(-1));
+    overlayNext.addEventListener("click", () => this.navigateOverlay(1));
+    overlayDownload.addEventListener("click", () => this.handleDownload(this.getOverlayItem()));
+    overlayOpenWorkflow.addEventListener("click", () =>
+      this.openWorkflow(false, this.getOverlayItem(), { fromOverlay: true })
+    );
+    overlayReplaceWorkflow.addEventListener("click", () =>
+      this.openWorkflow(true, this.getOverlayItem(), { fromOverlay: true })
+    );
+    overlayReset.addEventListener("click", () => this.resetOverlayZoom());
+    overlayHint.addEventListener("click", (event) => this.handleOverlayHintClick(event));
+
+    overlayMedia.addEventListener("wheel", (event) => this.handleOverlayZoom(event), {
+      passive: false,
+    });
+    overlayMedia.addEventListener("dblclick", () => this.resetOverlayZoom());
+    overlayImage.addEventListener("pointerdown", (event) => this.startOverlayPan(event));
+    overlayImage.addEventListener("pointerup", () => this.stopOverlayPan());
+    overlayImage.addEventListener("pointerleave", () => this.stopOverlayPan());
+    overlay.addEventListener("click", (event) => this.handleOverlayBackgroundClick(event));
 
     this.loadConfig()
       .then(() => this.refreshList())
@@ -552,6 +1172,13 @@ class AssetsPlusExplorer {
       deleteButton,
       openWorkflowButton,
       replaceWorkflowButton,
+      overlayClose,
+      overlayPrev,
+      overlayNext,
+      overlayDownload,
+      overlayOpenWorkflow,
+      overlayReplaceWorkflow,
+      overlayReset,
     } = this.elements;
     if (title) title.textContent = t("app.title");
     if (outputTab) outputTab.textContent = t("tabs.output");
@@ -562,12 +1189,35 @@ class AssetsPlusExplorer {
     if (deleteButton) deleteButton.textContent = t("actions.delete");
     if (openWorkflowButton) openWorkflowButton.textContent = t("actions.open_workflow_new_tab");
     if (replaceWorkflowButton) replaceWorkflowButton.textContent = t("actions.replace_workflow");
+    if (overlayClose) overlayClose.setAttribute("aria-label", t("overlay.close"));
+    if (overlayPrev) overlayPrev.setAttribute("aria-label", t("overlay.previous"));
+    if (overlayNext) overlayNext.setAttribute("aria-label", t("overlay.next"));
+    if (overlayDownload) {
+      overlayDownload.setAttribute("title", t("actions.download"));
+      overlayDownload.setAttribute("aria-label", t("actions.download"));
+    }
+    if (overlayOpenWorkflow) {
+      overlayOpenWorkflow.setAttribute("title", t("actions.open_workflow_new_tab"));
+      overlayOpenWorkflow.setAttribute("aria-label", t("actions.open_workflow_new_tab"));
+    }
+    if (overlayReplaceWorkflow) {
+      overlayReplaceWorkflow.setAttribute("title", t("actions.replace_workflow"));
+      overlayReplaceWorkflow.setAttribute("aria-label", t("actions.replace_workflow"));
+    }
+    if (overlayReset) overlayReset.textContent = t("overlay.reset_zoom");
     this.updateActionsBar();
+    this.updateOverlayShortcutHints();
+    this.updateOverlayHelpVisibility();
     this.renderGrid();
+  }
+
+  detachOverlayHandlers() {
+    this.stopOverlayPan();
   }
 
   destroy() {
     this.stopPolling();
+    this.detachOverlayHandlers();
     this.container.innerHTML = "";
   }
 
@@ -603,6 +1253,18 @@ class AssetsPlusExplorer {
       recursive: Boolean(this.getSetting(SETTINGS.recursive, config.recursive ?? true)),
       scanDepth,
       deleteMode: String(this.getSetting(SETTINGS.deleteMode, config.default_delete_mode ?? DEFAULT_DELETE_MODE)),
+      confirmDelete: Boolean(
+        this.getSetting(SETTINGS.confirmDelete, config.confirm_delete ?? DEFAULT_CONFIRM_DELETE)
+      ),
+      showOverlayHelp: Boolean(
+        this.getSetting(SETTINGS.showOverlayHelp, DEFAULT_SHOW_OVERLAY_HELP)
+      ),
+      keepOverlayOpenOnWorkflow: Boolean(
+        this.getSetting(
+          SETTINGS.keepOverlayOpenOnWorkflow,
+          DEFAULT_KEEP_OVERLAY_OPEN_ON_WORKFLOW
+        )
+      ),
       thumbnailSize: Number.isFinite(thumbnailSize) ? thumbnailSize : DEFAULT_THUMB_SIZE,
       extensions: (config.allowed_extensions || DEFAULT_EXTENSIONS).map((ext) =>
         ext.startsWith(".") ? ext.slice(1) : ext
@@ -618,6 +1280,7 @@ class AssetsPlusExplorer {
     if (this.state.tab === tab) return;
     this.state.tab = tab;
     this.state.selected = new Set();
+    this.closeOverlay();
     this.updateTabs();
     this.refreshList();
     this.startPolling();
@@ -638,6 +1301,27 @@ class AssetsPlusExplorer {
     return this.state.items.filter((item) => this.state.selected.has(item.relpath));
   }
 
+  getFilteredItems() {
+    return this.state.items.filter((item) => {
+      if (!this.state.search) return true;
+      const haystack = `${item.filename} ${item.relpath}`.toLowerCase();
+      return haystack.includes(this.state.search.toLowerCase());
+    });
+  }
+
+  setSelected(relpath, isSelected) {
+    if (isSelected) {
+      this.state.selected.add(relpath);
+    } else {
+      this.state.selected.delete(relpath);
+    }
+    this.applySelectionStyles();
+    this.updateActionsBar();
+    if (this.state.overlay.relpath) {
+      this.updateOverlayView();
+    }
+  }
+
   updateActionsBar() {
     const selectionCount = this.state.selected.size;
     const { actionsBar, selectionLabel, deleteButton, openWorkflowButton, replaceWorkflowButton } =
@@ -653,18 +1337,17 @@ class AssetsPlusExplorer {
   applySelectionStyles() {
     this.elements.grid.querySelectorAll(".assets-plus-card").forEach((card) => {
       const relpath = card.getAttribute("data-relpath");
-      card.classList.toggle("selected", this.state.selected.has(relpath));
+      const isSelected = this.state.selected.has(relpath);
+      card.classList.toggle("selected", isSelected);
+      const checkbox = card.querySelector(".assets-plus-checkbox");
+      if (checkbox) checkbox.checked = isSelected;
     });
   }
 
   renderGrid() {
     const grid = this.elements.grid;
     grid.innerHTML = "";
-    const filtered = this.state.items.filter((item) => {
-      if (!this.state.search) return true;
-      const haystack = `${item.filename} ${item.relpath}`.toLowerCase();
-      return haystack.includes(this.state.search.toLowerCase());
-    });
+    const filtered = this.getFilteredItems();
 
     if (this.state.loading) {
       this.setStatus(t("status.loading"));
@@ -686,6 +1369,12 @@ class AssetsPlusExplorer {
     filtered.forEach((item) => {
       const card = createElement("div", { className: "assets-plus-card" });
       card.setAttribute("data-relpath", item.relpath);
+
+      const checkbox = createElement("input", {
+        className: "assets-plus-checkbox",
+        attrs: { type: "checkbox", "aria-label": t("selection.checkbox_label") },
+      });
+      checkbox.checked = this.state.selected.has(item.relpath);
 
       const thumb = createElement("div", { className: "assets-plus-thumb" });
       const thumbUrl = buildThumbUrl(item.relpath, this.state.tab, thumbnailSize);
@@ -717,17 +1406,19 @@ class AssetsPlusExplorer {
         );
       }
 
+      card.appendChild(checkbox);
       card.appendChild(thumb);
       card.appendChild(cardBody);
 
-      card.addEventListener("click", () => {
-        if (this.state.selected.has(item.relpath)) {
-          this.state.selected.delete(item.relpath);
-        } else {
-          this.state.selected.add(item.relpath);
+      checkbox.addEventListener("change", (event) => {
+        this.setSelected(item.relpath, event.target.checked);
+      });
+
+      card.addEventListener("click", (event) => {
+        if (event.target.closest(".assets-plus-checkbox")) {
+          return;
         }
-        this.applySelectionStyles();
-        this.updateActionsBar();
+        this.openOverlay(item.relpath);
       });
 
       grid.appendChild(card);
@@ -806,10 +1497,10 @@ class AssetsPlusExplorer {
     }
   }
 
-  handleDownload() {
-    const selectedItems = this.getSelectedItems();
-    if (!selectedItems.length) return;
-    selectedItems.forEach((item) => {
+  handleDownload(targetItem) {
+    const items = targetItem ? [targetItem] : this.getSelectedItems();
+    if (!items.length) return;
+    items.forEach((item) => {
       const url = buildViewUrl(item.relpath, this.state.tab);
       const link = document.createElement("a");
       link.href = url;
@@ -822,37 +1513,76 @@ class AssetsPlusExplorer {
     });
   }
 
-  async handleDelete() {
-    const selectedItems = this.getSelectedItems();
-    if (!selectedItems.length) return;
+  async handleDelete(targetItem) {
+    const items = targetItem ? [targetItem] : this.getSelectedItems();
+    if (!items.length) return;
     const settings = this.getSettingsSnapshot();
     const mode = settings.deleteMode;
     const message =
       mode === "hide"
         ? t("confirm.delete.hide_message")
         : t("confirm.delete.delete_message");
-    const dialogService = this.app?.extensionManager?.dialog;
-    let confirmed = false;
-    if (dialogService?.confirm) {
-      confirmed =
-        (await dialogService.confirm({
-          title: t("confirm.delete.title"),
-          message,
-          type: mode === "hide" ? "default" : "delete",
-          itemList: selectedItems.map((asset) => asset.filename),
-        })) === true;
-    } else {
-      confirmed = window.confirm(message);
+    if (settings.confirmDelete) {
+      const dialogService = this.app?.extensionManager?.dialog;
+      let confirmed = false;
+      if (dialogService?.confirm) {
+        confirmed =
+          (await dialogService.confirm({
+            title: t("confirm.delete.title"),
+            message,
+            type: mode === "hide" ? "default" : "delete",
+            itemList: items.map((asset) => asset.filename),
+          })) === true;
+      } else {
+        confirmed = window.confirm(message);
+      }
+      if (!confirmed) return;
     }
-    if (!confirmed) return;
+
+    const overlayRelpath = this.state.overlay.relpath;
+    const deleteRelpaths = items.map((item) => item.relpath);
+    let nextOverlayRelpath = null;
+    if (overlayRelpath && deleteRelpaths.includes(overlayRelpath)) {
+      const filtered = this.getFilteredItems();
+      const index = filtered.findIndex((entry) => entry.relpath === overlayRelpath);
+      if (index !== -1) {
+        for (let i = index + 1; i < filtered.length; i += 1) {
+          if (!deleteRelpaths.includes(filtered[i].relpath)) {
+            nextOverlayRelpath = filtered[i].relpath;
+            break;
+          }
+        }
+        if (!nextOverlayRelpath) {
+          for (let i = index - 1; i >= 0; i -= 1) {
+            if (!deleteRelpaths.includes(filtered[i].relpath)) {
+              nextOverlayRelpath = filtered[i].relpath;
+              break;
+            }
+          }
+        }
+      }
+    }
 
     try {
       await fetchJson("/assets_plus/output/delete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ relpaths: selectedItems.map((item) => item.relpath), mode }),
+        body: JSON.stringify({ relpaths: deleteRelpaths, mode }),
       });
+      if (overlayRelpath && deleteRelpaths.includes(overlayRelpath)) {
+        this.state.overlay.relpath = nextOverlayRelpath;
+        if (!nextOverlayRelpath) {
+          this.closeOverlay();
+        }
+      }
       await this.refreshList();
+      if (
+        nextOverlayRelpath &&
+        this.state.items.some((item) => item.relpath === nextOverlayRelpath)
+      ) {
+        this.state.overlay.relpath = nextOverlayRelpath;
+        this.updateOverlayView();
+      }
     } catch (error) {
       this.toast({
         severity: "error",
@@ -875,11 +1605,11 @@ class AssetsPlusExplorer {
     };
   }
 
-  async openWorkflow(replaceCurrent) {
-    const selectedItems = this.getSelectedItems();
-    if (selectedItems.length !== 1) return;
+  async openWorkflow(replaceCurrent, targetItem = null, options = {}) {
+    const items = targetItem ? [targetItem] : this.getSelectedItems();
+    if (items.length !== 1) return;
     try {
-      const { workflow, filename } = await this.extractWorkflow(selectedItems[0]);
+      const { workflow, filename } = await this.extractWorkflow(items[0]);
       if (!workflow) {
         this.toast({
           severity: "warn",
@@ -899,6 +1629,7 @@ class AssetsPlusExplorer {
           detail: t("toast.workflow_replaced"),
           life: 2000,
         });
+        this.maybeCloseOverlayAfterWorkflow(options);
         return;
       }
       const workflowActions = resolveWorkflowActionsService(this.app);
@@ -913,6 +1644,7 @@ class AssetsPlusExplorer {
           detail: t("toast.workflow_opened"),
           life: 2000,
         });
+        this.maybeCloseOverlayAfterWorkflow(options);
         return;
       }
       const workflowStore = resolveWorkflowStore(this.app);
@@ -925,6 +1657,7 @@ class AssetsPlusExplorer {
           detail: t("toast.workflow_opened"),
           life: 2000,
         });
+        this.maybeCloseOverlayAfterWorkflow(options);
         return;
       }
       warn(t("log.workflow_actions_unavailable"));
@@ -936,6 +1669,321 @@ class AssetsPlusExplorer {
         detail: t("toast.workflow_open_failed"),
         life: 2500,
       });
+    }
+  }
+
+  maybeCloseOverlayAfterWorkflow(options = {}) {
+    if (!options.fromOverlay) return;
+    const { keepOverlayOpenOnWorkflow } = this.getSettingsSnapshot();
+    if (!keepOverlayOpenOnWorkflow) {
+      this.closeOverlay();
+    }
+  }
+
+  getOverlayItem() {
+    if (!this.state.overlay.relpath) return null;
+    return this.state.items.find((item) => item.relpath === this.state.overlay.relpath) || null;
+  }
+
+  openOverlay(relpath) {
+    if (!relpath) return;
+    const item = this.state.items.find((entry) => entry.relpath === relpath);
+    if (!item) return;
+    this.state.overlay.relpath = relpath;
+    this.resetOverlayZoom();
+    this.elements.overlay.classList.add("active");
+    this.updateOverlayShortcutHints();
+    this.updateOverlayView();
+  }
+
+  closeOverlay() {
+    this.elements.overlay.classList.remove("active");
+    this.state.overlay.relpath = null;
+    this.resetOverlayZoom();
+    this.stopOverlayPan();
+    const { overlayVideo } = this.elements;
+    overlayVideo.pause?.();
+    overlayVideo.removeAttribute("src");
+    overlayVideo.load?.();
+  }
+
+  navigateOverlay(direction) {
+    const items = this.getFilteredItems();
+    if (!items.length || !this.state.overlay.relpath) return;
+    const index = items.findIndex((item) => item.relpath === this.state.overlay.relpath);
+    if (index === -1) return;
+    let nextIndex = index + direction;
+    if (direction === "first") {
+      nextIndex = 0;
+    } else if (direction === "last") {
+      nextIndex = items.length - 1;
+    }
+    if (nextIndex < 0 || nextIndex >= items.length) return;
+    this.state.overlay.relpath = items[nextIndex].relpath;
+    this.resetOverlayZoom();
+    this.updateOverlayView();
+  }
+
+  updateOverlayView() {
+    const item = this.getOverlayItem();
+    if (!item) {
+      this.closeOverlay();
+      return;
+    }
+    const { overlayInfo, overlayPrev, overlayNext, overlayImage, overlayVideo } = this.elements;
+    const items = this.getFilteredItems();
+    const index = items.findIndex((entry) => entry.relpath === item.relpath);
+    overlayPrev.disabled = index <= 0;
+    overlayNext.disabled = index === -1 || index >= items.length - 1;
+
+    const extension = item.filename.split(".").pop()?.toUpperCase() || "";
+    const dateLabel = new Date(item.mtime * 1000).toLocaleString();
+    overlayInfo.textContent = `${item.filename} • ${extension} • ${dateLabel}`;
+
+    const viewUrl = buildViewUrl(item.relpath, this.state.tab);
+    if (item.type === "video") {
+      overlayImage.style.display = "none";
+      overlayVideo.style.display = "block";
+      overlayVideo.src = viewUrl;
+    } else {
+      overlayVideo.style.display = "none";
+      overlayVideo.pause?.();
+      overlayVideo.removeAttribute("src");
+      overlayVideo.load?.();
+      overlayImage.style.display = "block";
+      overlayImage.src = viewUrl;
+    }
+    this.updateOverlayActions(item);
+    this.updateOverlayHelpVisibility();
+    this.applyOverlayTransform();
+  }
+
+  handleOverlayBackgroundClick(event) {
+    if (!this.state.overlay.relpath) return;
+    const target = event.target;
+    if (
+      target.closest(".assets-plus-overlay-top") ||
+      target.closest(".assets-plus-overlay-nav") ||
+      target.closest(".assets-plus-overlay-reset") ||
+      target.closest(".assets-plus-overlay-hint")
+    ) {
+      return;
+    }
+    if (target.closest(".assets-plus-overlay-image") || target.closest(".assets-plus-overlay-video")) {
+      return;
+    }
+    this.closeOverlay();
+  }
+
+  handleOverlayHintClick(event) {
+    const button = event.target.closest(".assets-plus-hint-button");
+    if (!button) return;
+    const action = button.getAttribute("data-action");
+    this.handleOverlayCommand(action);
+  }
+
+  handleOverlayCommand(action) {
+    if (!this.state.overlay.relpath) return;
+    if (action === "prev") {
+      this.navigateOverlay(-1);
+    } else if (action === "next") {
+      this.navigateOverlay(1);
+    } else if (action === "first") {
+      this.navigateOverlay("first");
+    } else if (action === "last") {
+      this.navigateOverlay("last");
+    } else if (action === "delete") {
+      const item = this.getOverlayItem();
+      if (item && this.state.tab === OUTPUT_TAB) {
+        this.handleDelete(item);
+      }
+    }
+  }
+
+  getCommandKeybinding(commandId) {
+    const commands = this.app?.extensionManager?.command?.commands || [];
+    const command = commands.find((entry) => entry.id === commandId);
+    return command?.keybinding ?? null;
+  }
+
+  getKeybindingDisplay(commandId) {
+    const keybinding = this.getCommandKeybinding(commandId);
+    const combo = keybinding?.combo;
+    if (!combo) {
+      return { label: "", full: "" };
+    }
+    const sequences =
+      typeof combo.getKeySequences === "function"
+        ? combo.getKeySequences()
+        : [combo.key].filter(Boolean);
+    const full =
+      typeof combo.toString === "function"
+        ? combo.toString()
+        : sequences.length
+        ? sequences.join(" + ")
+        : "";
+    const keyOnly = sequences.length === 1 ? String(sequences[0]) : "";
+    const label = keyOnly.length === 1 ? keyOnly.toUpperCase() : "";
+    return { label, full };
+  }
+
+  updateOverlayShortcutHints() {
+    const {
+      hintUp,
+      hintLeft,
+      hintDown,
+      hintRight,
+      hintDelete,
+      hintUpKey,
+      hintLeftKey,
+      hintDownKey,
+      hintRightKey,
+      hintDeleteKey,
+    } = this.elements;
+    const hintMap = [
+      {
+        button: hintUp,
+        keyEl: hintUpKey,
+        commandId: OVERLAY_COMMANDS.first,
+        title: t("overlay.hint.first"),
+      },
+      {
+        button: hintLeft,
+        keyEl: hintLeftKey,
+        commandId: OVERLAY_COMMANDS.prev,
+        title: t("overlay.hint.previous"),
+      },
+      {
+        button: hintDown,
+        keyEl: hintDownKey,
+        commandId: OVERLAY_COMMANDS.last,
+        title: t("overlay.hint.last"),
+      },
+      {
+        button: hintRight,
+        keyEl: hintRightKey,
+        commandId: OVERLAY_COMMANDS.next,
+        title: t("overlay.hint.next"),
+      },
+      {
+        button: hintDelete,
+        keyEl: hintDeleteKey,
+        commandId: OVERLAY_COMMANDS.delete,
+        title: t("actions.delete"),
+      },
+    ];
+    hintMap.forEach(({ button, keyEl, commandId, title }) => {
+      if (!button || !keyEl) return;
+      const { label, full } = this.getKeybindingDisplay(commandId);
+      keyEl.textContent = label;
+      keyEl.style.visibility = label ? "visible" : "hidden";
+      const nextTitle = full ? `${title} (${full})` : title;
+      button.setAttribute("title", nextTitle);
+    });
+  }
+
+  updateOverlayHelpVisibility() {
+    const { overlayHint, hintDelete } = this.elements;
+    if (!overlayHint) return;
+    const { showOverlayHelp } = this.getSettingsSnapshot();
+    overlayHint.style.display = showOverlayHelp ? "grid" : "none";
+    if (hintDelete) {
+      hintDelete.disabled = this.state.tab !== OUTPUT_TAB;
+    }
+    this.updateOverlayShortcutHints();
+  }
+
+  updateOverlayActions(item) {
+    const { overlayOpenWorkflow, overlayReplaceWorkflow } = this.elements;
+    const hasWorkflow = item?.has_workflow && item?.type === "image";
+    overlayOpenWorkflow.disabled = !hasWorkflow;
+    overlayReplaceWorkflow.disabled = !hasWorkflow;
+  }
+
+  resetOverlayZoom() {
+    this.state.overlay.zoom = 1;
+    this.state.overlay.offsetX = 0;
+    this.state.overlay.offsetY = 0;
+    this.applyOverlayTransform();
+    this.updateOverlayResetButton();
+  }
+
+  updateOverlayResetButton() {
+    const isActive = Math.abs(this.state.overlay.zoom - 1) > 0.01;
+    this.elements.overlayReset.classList.toggle("active", isActive);
+  }
+
+  applyOverlayTransform() {
+    const { overlayImage } = this.elements;
+    const item = this.getOverlayItem();
+    if (!item || item.type !== "image") {
+      overlayImage.style.transform = "";
+      overlayImage.classList.remove("zoomable", "grabbing");
+      return;
+    }
+    const { zoom, offsetX, offsetY } = this.state.overlay;
+    overlayImage.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${zoom})`;
+    overlayImage.classList.toggle("zoomable", zoom > 1);
+  }
+
+  handleOverlayZoom(event) {
+    const item = this.getOverlayItem();
+    if (!item || item.type !== "image") return;
+    event.preventDefault();
+    const { overlayMedia } = this.elements;
+    const rect = overlayMedia.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const cursorX = event.clientX - centerX;
+    const cursorY = event.clientY - centerY;
+    const direction = event.deltaY < 0 ? 1.1 : 0.9;
+    const previousZoom = this.state.overlay.zoom;
+    const nextZoom = clamp(previousZoom * direction, 1, 6);
+    const scaleChange = nextZoom / previousZoom;
+    this.state.overlay.zoom = nextZoom;
+    this.state.overlay.offsetX =
+      (this.state.overlay.offsetX - cursorX) * scaleChange + cursorX;
+    this.state.overlay.offsetY =
+      (this.state.overlay.offsetY - cursorY) * scaleChange + cursorY;
+    if (nextZoom === 1) {
+      this.state.overlay.offsetX = 0;
+      this.state.overlay.offsetY = 0;
+    }
+    this.applyOverlayTransform();
+    this.updateOverlayResetButton();
+  }
+
+  startOverlayPan(event) {
+    const item = this.getOverlayItem();
+    if (!item || item.type !== "image") return;
+    if (this.state.overlay.zoom <= 1) return;
+    event.preventDefault();
+    this.state.overlay.panning = true;
+    this.state.overlay.panStartX = event.clientX;
+    this.state.overlay.panStartY = event.clientY;
+    this.state.overlay.panOriginX = this.state.overlay.offsetX;
+    this.state.overlay.panOriginY = this.state.overlay.offsetY;
+    this.elements.overlayImage.classList.add("grabbing");
+    this.overlayPanHandler = (moveEvent) => {
+      if (!this.state.overlay.panning) return;
+      const dx = moveEvent.clientX - this.state.overlay.panStartX;
+      const dy = moveEvent.clientY - this.state.overlay.panStartY;
+      this.state.overlay.offsetX = this.state.overlay.panOriginX + dx;
+      this.state.overlay.offsetY = this.state.overlay.panOriginY + dy;
+      this.applyOverlayTransform();
+    };
+    window.addEventListener("pointermove", this.overlayPanHandler);
+    window.addEventListener("pointerup", () => this.stopOverlayPan(), { once: true });
+  }
+
+  stopOverlayPan() {
+    if (this.overlayPanHandler) {
+      window.removeEventListener("pointermove", this.overlayPanHandler);
+      this.overlayPanHandler = null;
+    }
+    this.state.overlay.panning = false;
+    if (this.elements.overlayImage) {
+      this.elements.overlayImage.classList.remove("grabbing");
     }
   }
 }
@@ -965,6 +2013,21 @@ const registerSidebarTab = (appInstance) => {
   });
 };
 
+const buildShortcutsPanelTab = (appInstance) => ({
+  id: ASSETS_PLUS_SHORTCUTS_TAB_ID,
+  title: t("shortcuts.assets_plus"),
+  type: "custom",
+  targetPanel: "shortcuts",
+  render: (container) => {
+    shortcutsPanelInstance?.destroy?.();
+    shortcutsPanelInstance = new AssetsPlusShortcutsPanel(appInstance, container);
+  },
+  destroy: () => {
+    shortcutsPanelInstance?.destroy?.();
+    shortcutsPanelInstance = null;
+  },
+});
+
 const boot = async () => {
   const appInstance = await waitForApp();
   if (!appInstance) {
@@ -980,6 +2043,9 @@ const boot = async () => {
 
   appInstance.registerExtension({
     name: EXTENSION_NAME,
+    commands: buildOverlayCommands(),
+    keybindings: OVERLAY_KEYBINDINGS,
+    bottomPanelTabs: [buildShortcutsPanelTab(appInstance)],
     settings: buildSettingsSchema(t, languageOptions, (newValue) => {
       const nextLanguage = String(newValue || DEFAULT_LANGUAGE);
       if (nextLanguage === activeLanguage) return;
