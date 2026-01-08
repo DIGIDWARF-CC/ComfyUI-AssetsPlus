@@ -14,7 +14,7 @@ import folder_paths
 from PIL import Image
 from server import PromptServer
 
-from .config import DEFAULT_CONFIG, load_config
+from .config import load_config, thumbnail_size_from_quality
 from .storage import HiddenEntry, load_hidden, save_hidden, thumb_cache_dir
 
 import importlib.util
@@ -104,6 +104,7 @@ def list_directory_items(
     recursive: bool,
     scan_depth: int | None,
     hidden: dict[str, HiddenEntry] | None = None,
+    hidden_prefix: str = "",
 ) -> list[dict[str, Any]]:
     hidden = hidden or {}
     items: list[dict[str, Any]] = []
@@ -114,7 +115,8 @@ def list_directory_items(
         if not allowed_extension(path.name, extensions):
             continue
         stat = path.stat()
-        hidden_entry = hidden.get(relpath)
+        hidden_key = f"{hidden_prefix}{relpath}" if hidden_prefix else relpath
+        hidden_entry = hidden.get(hidden_key)
         if hidden_entry and hidden_entry.mtime == int(stat.st_mtime) and hidden_entry.size == stat.st_size:
             continue
         file_type = "video" if path.suffix.lower() in {".mp4", ".webm"} else "image"
@@ -158,6 +160,43 @@ def read_metadata(path: Path) -> dict[str, Any]:
 def build_thumb_cache_key(relpath: str, mtime: int, size: int, width: int, height: int) -> str:
     hash_input = f"{relpath}:{mtime}:{size}:{width}:{height}".encode("utf-8")
     return hashlib.sha256(hash_input).hexdigest()
+
+
+def remove_thumb_cache_entries(
+    relpath: str,
+    mtime: int,
+    size: int,
+    thumbnail_sizes: tuple[tuple[int, int], ...],
+) -> int:
+    removed = 0
+    cache_root = thumb_cache_dir()
+    for width, height in thumbnail_sizes:
+        cache_key = build_thumb_cache_key(relpath, mtime, size, width, height)
+        cache_path = cache_root / f"{cache_key}.png"
+        if not cache_path.exists():
+            continue
+        try:
+            cache_path.unlink()
+            removed += 1
+        except OSError:
+            LOGGER.warning(
+                "[Assets+ Explorer] Failed to remove thumbnail cache %s for %s",
+                cache_path,
+                relpath,
+            )
+    return removed
+
+
+def clear_thumb_cache() -> int:
+    cache_root = thumb_cache_dir()
+    removed = 0
+    for entry in cache_root.glob("*.png"):
+        try:
+            entry.unlink()
+            removed += 1
+        except OSError:
+            LOGGER.warning("[Assets+ Explorer] Failed to remove thumbnail cache %s", entry)
+    return removed
 
 
 @PromptServer.instance.routes.get("/assets_plus/output/list")
@@ -230,7 +269,15 @@ async def input_list(request: web.Request) -> web.Response:
     cursor = params.get("cursor")
 
     input_dir = get_input_directory()
-    items = list_directory_items(input_dir, extensions, recursive, scan_depth)
+    hidden = load_hidden()
+    items = list_directory_items(
+        input_dir,
+        extensions,
+        recursive,
+        scan_depth,
+        hidden=hidden,
+        hidden_prefix="input/",
+    )
     if cursor:
         try:
             cursor_value = int(cursor)
@@ -246,10 +293,12 @@ async def input_list(request: web.Request) -> web.Response:
 @PromptServer.instance.routes.get("/assets_plus/config")
 async def assets_plus_config(_: web.Request) -> web.Response:
     config = load_config()
+    thumbnail_size = thumbnail_size_from_quality(config.thumbnail_quality)
     return web.json_response(
         {
             "allowed_extensions": list(config.allowed_extensions),
-            "thumbnail_size": list(config.thumbnail_size),
+            "thumbnail_quality": config.thumbnail_quality,
+            "thumbnail_size": list(thumbnail_size),
             "list_limit": config.list_limit,
             "recursive": config.recursive,
             "poll_seconds": config.poll_seconds,
@@ -266,8 +315,9 @@ async def output_thumb(request: web.Request) -> web.StreamResponse:
     relpath = params.get("relpath")
     if not relpath:
         raise web.HTTPBadRequest(text="relpath is required")
-    width = int(params.get("w", config.thumbnail_size[0]))
-    height = int(params.get("h", config.thumbnail_size[1]))
+    default_width, default_height = thumbnail_size_from_quality(config.thumbnail_quality)
+    width = int(params.get("w", default_width))
+    height = int(params.get("h", default_height))
     path = resolve_relpath(relpath, get_output_directory())
     if not path.exists():
         raise web.HTTPNotFound(text="Asset not found")
@@ -299,8 +349,9 @@ async def input_thumb(request: web.Request) -> web.StreamResponse:
     relpath = params.get("relpath")
     if not relpath:
         raise web.HTTPBadRequest(text="relpath is required")
-    width = int(params.get("w", config.thumbnail_size[0]))
-    height = int(params.get("h", config.thumbnail_size[1]))
+    default_width, default_height = thumbnail_size_from_quality(config.thumbnail_quality)
+    width = int(params.get("w", default_width))
+    height = int(params.get("h", default_height))
     path = resolve_relpath(relpath, get_input_directory())
     if not path.exists():
         raise web.HTTPNotFound(text="Asset not found")
@@ -323,6 +374,13 @@ async def input_thumb(request: web.Request) -> web.StreamResponse:
         raise web.HTTPUnsupportedMediaType(text="Unsupported image")
 
     return web.FileResponse(path=cache_path)
+
+
+@PromptServer.instance.routes.post("/assets_plus/thumb/clear")
+async def clear_thumbnails(_: web.Request) -> web.Response:
+    removed = clear_thumb_cache()
+    LOGGER.info("[Assets+ Explorer] Cleared thumbnail cache entries=%s", removed)
+    return web.json_response({"removed": removed})
 
 
 @PromptServer.instance.routes.get("/assets_plus/output/meta")
@@ -351,22 +409,20 @@ async def input_meta(request: web.Request) -> web.Response:
     return web.json_response({"relpath": relpath, "metadata": metadata})
 
 
-@PromptServer.instance.routes.post("/assets_plus/output/delete")
-async def output_delete(request: web.Request) -> web.Response:
-    config = load_config()
-    payload = await request.json()
-    relpaths = payload.get("relpaths", [])
-    mode = payload.get("mode") or config.default_delete_mode
-    if not isinstance(relpaths, list):
-        raise web.HTTPBadRequest(text="relpaths must be a list")
-
+def delete_assets(
+    base_dir: Path,
+    relpaths: list[str],
+    mode: str,
+    hidden_prefix: str = "",
+    thumbnail_sizes: tuple[tuple[int, int], ...] = ((256, 256), (512, 512)),
+) -> tuple[list[str], list[str]]:
     hidden = load_hidden()
     removed: list[str] = []
     failed: list[str] = []
 
     for relpath in relpaths:
         try:
-            path = resolve_relpath(relpath, get_output_directory())
+            path = resolve_relpath(relpath, base_dir)
         except web.HTTPError:
             failed.append(relpath)
             continue
@@ -374,8 +430,14 @@ async def output_delete(request: web.Request) -> web.Response:
             failed.append(relpath)
             continue
         stat = path.stat()
+        remove_thumb_cache_entries(relpath, int(stat.st_mtime), stat.st_size, thumbnail_sizes)
         if mode == "hide":
-            hidden[relpath] = HiddenEntry(relpath=relpath, mtime=int(stat.st_mtime), size=stat.st_size)
+            hidden_key = f"{hidden_prefix}{relpath}" if hidden_prefix else relpath
+            hidden[hidden_key] = HiddenEntry(
+                relpath=hidden_key,
+                mtime=int(stat.st_mtime),
+                size=stat.st_size,
+            )
             removed.append(relpath)
             continue
         try:
@@ -389,7 +451,34 @@ async def output_delete(request: web.Request) -> web.Response:
             failed.append(relpath)
 
     save_hidden(hidden)
+    return removed, failed
+
+
+@PromptServer.instance.routes.post("/assets_plus/output/delete")
+async def output_delete(request: web.Request) -> web.Response:
+    config = load_config()
+    payload = await request.json()
+    relpaths = payload.get("relpaths", [])
+    mode = payload.get("mode") or config.default_delete_mode
+    if not isinstance(relpaths, list):
+        raise web.HTTPBadRequest(text="relpaths must be a list")
+
+    removed, failed = delete_assets(get_output_directory(), relpaths, mode)
     LOGGER.info("Assets+ delete mode=%s removed=%s failed=%s", mode, removed, failed)
+    return web.json_response({"removed": removed, "failed": failed, "mode": mode})
+
+
+@PromptServer.instance.routes.post("/assets_plus/input/delete")
+async def input_delete(request: web.Request) -> web.Response:
+    config = load_config()
+    payload = await request.json()
+    relpaths = payload.get("relpaths", [])
+    mode = payload.get("mode") or config.default_delete_mode
+    if not isinstance(relpaths, list):
+        raise web.HTTPBadRequest(text="relpaths must be a list")
+
+    removed, failed = delete_assets(get_input_directory(), relpaths, mode, hidden_prefix="input/")
+    LOGGER.info("Assets+ input delete mode=%s removed=%s failed=%s", mode, removed, failed)
     return web.json_response({"removed": removed, "failed": failed, "mode": mode})
 
 

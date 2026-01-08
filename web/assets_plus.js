@@ -9,7 +9,11 @@ const INPUT_TAB = "input";
 const DEFAULT_EXTENSIONS = ["png", "jpg", "jpeg", "webp", "mp4", "webm"];
 const DEFAULT_POLL_SECONDS = 5;
 const DEFAULT_LIST_LIMIT = 200;
-const DEFAULT_THUMB_SIZE = 256;
+const DEFAULT_THUMB_QUALITY = "low";
+const THUMB_QUALITY_SIZES = {
+  low: 256,
+  high: 512,
+};
 const DEFAULT_DELETE_MODE = "trash";
 const DEFAULT_CONFIRM_DELETE = true;
 const DEFAULT_SHOW_OVERLAY_HELP = true;
@@ -52,7 +56,8 @@ const SETTINGS = {
   recursive: "AssetsPlus.RecursiveScan",
   scanDepth: "AssetsPlus.ScanDepth",
   deleteMode: "AssetsPlus.DeleteMode",
-  thumbnailSize: "AssetsPlus.ThumbnailSize",
+  thumbnailQuality: "AssetsPlus.ThumbnailQuality",
+  clearThumbnails: "AssetsPlus.ClearThumbnails",
   confirmDelete: "AssetsPlus.ConfirmDelete",
   showOverlayHelp: "AssetsPlus.ShowOverlayHelp",
   keepOverlayOpenOnWorkflow: "AssetsPlus.KeepOverlayOpenOnWorkflow",
@@ -71,6 +76,47 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
 const resolveApp = () => window.app || window.comfyApp || window.comfy?.app || importedApp;
+
+const normalizeThumbnailQuality = (value) => {
+  if (typeof value !== "string") return null;
+  const normalized = value.toLowerCase().trim();
+  return Object.prototype.hasOwnProperty.call(THUMB_QUALITY_SIZES, normalized)
+    ? normalized
+    : null;
+};
+
+const inferThumbnailQualityFromSize = (value) => {
+  const size = Number(value);
+  if (!Number.isFinite(size)) return null;
+  return size >= THUMB_QUALITY_SIZES.high ? "high" : "low";
+};
+
+const resolveThumbnailQuality = (qualityValue, sizeFallback) => {
+  return (
+    normalizeThumbnailQuality(qualityValue) ||
+    inferThumbnailQualityFromSize(sizeFallback) ||
+    DEFAULT_THUMB_QUALITY
+  );
+};
+
+const resolveThumbnailSize = (qualityValue, sizeFallback) => {
+  const quality = resolveThumbnailQuality(qualityValue, sizeFallback);
+  return THUMB_QUALITY_SIZES[quality] || THUMB_QUALITY_SIZES[DEFAULT_THUMB_QUALITY];
+};
+
+const createSettingsButtonRenderer = (label, onClick) => {
+  return () => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "assets-plus-settings-button";
+    button.textContent = label;
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      onClick?.();
+    });
+    return button;
+  };
+};
 
 const SHORTCUT_KEY_LABELS = {
   Control: "Ctrl",
@@ -227,7 +273,7 @@ const applyLanguage = async (language, { force = false } = {}) => {
   shortcutsPanelInstance?.updateTranslations?.();
 };
 
-const buildSettingsSchema = (t, languageOptions, handleLanguageChange) => {
+const buildSettingsSchema = (t, languageOptions, handleLanguageChange, handleClearThumbnails) => {
   const settingsGroup = t("settings.group");
   const withCategory = (setting) => applySettingsCategory(setting, settingsGroup);
   return [
@@ -288,11 +334,24 @@ const buildSettingsSchema = (t, languageOptions, handleLanguageChange) => {
       defaultValue: DEFAULT_KEEP_OVERLAY_OPEN_ON_WORKFLOW,
     }),
     withCategory({
-      id: SETTINGS.thumbnailSize,
-      name: t("settings.thumbnail_size"),
-      type: "number",
-      defaultValue: DEFAULT_THUMB_SIZE,
-      attrs: { min: 64, step: 16 },
+      id: SETTINGS.thumbnailQuality,
+      name: t("settings.thumbnail_quality"),
+      type: "combo",
+      defaultValue: DEFAULT_THUMB_QUALITY,
+      options: [
+        { text: t("settings.thumbnail_quality.low"), value: "low" },
+        { text: t("settings.thumbnail_quality.high"), value: "high" },
+      ],
+    }),
+    withCategory({
+      id: SETTINGS.clearThumbnails,
+      name: t("settings.clear_thumbnails"),
+      type: createSettingsButtonRenderer(t("settings.clear_thumbnails"), () => {
+        if (typeof handleClearThumbnails === "function") {
+          handleClearThumbnails();
+        }
+      }),
+      defaultValue: "",
     }),
     withCategory({
       id: SETTINGS.language,
@@ -488,22 +547,47 @@ const createElement = (tag, { className, text, attrs } = {}) => {
 const createStyleTag = () => {
   const style = document.createElement("style");
   style.textContent = `
+    .assets-plus-container {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      overflow: hidden;
+    }
     .assets-plus-root {
       display: flex;
       flex-direction: column;
-      gap: 10px;
-      padding: 12px;
+      gap: 0;
+      padding: 0;
+      height: 100%;
+      min-height: 0;
+      overflow: hidden;
       color: var(--fg-color, #e5e7eb);
       font-family: var(--font-family, sans-serif);
-      --assets-plus-border: var(--border-color, #374151);
-      --assets-plus-control-bg: var(--comfy-menu-secondary-bg, var(--comfy-menu-bg, #111827));
-      --assets-plus-card-bg: var(--comfy-menu-bg, var(--bg-color, #0f172a));
-      --assets-plus-input-bg: var(--comfy-input-bg, var(--comfy-menu-bg, #0f172a));
+      --assets-plus-border: var(--border-color, rgba(148, 163, 184, 0.35));
+      --assets-plus-panel-bg: var(--comfy-menu-bg, var(--bg-color, #0f172a));
+      --assets-plus-control-bg: var(--comfy-menu-secondary-bg, rgba(15, 23, 42, 0.6));
+      --assets-plus-card-bg: var(--comfy-menu-secondary-bg, rgba(15, 23, 42, 0.5));
+      --assets-plus-input-bg: var(--comfy-input-bg, var(--comfy-menu-secondary-bg, #0f172a));
       --assets-plus-accent: var(--p-primary-color, #2563eb);
       --assets-plus-accent-contrast: var(--p-primary-contrast-color, #ffffff);
-      --assets-plus-thumb-bg: var(--bg-color, #030712);
+      --assets-plus-thumb-bg: var(--comfy-menu-bg, var(--bg-color, #0f172a));
+      background: var(--assets-plus-panel-bg);
     }
     .assets-plus-header {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 10px 12px 8px;
+      background: var(--assets-plus-panel-bg);
+      border-bottom: 1px solid var(--assets-plus-border);
+      flex: 0 0 auto;
+    }
+    .assets-plus-body {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      overflow-x: hidden;
+      padding: 0 12px 12px;
       display: flex;
       flex-direction: column;
       gap: 8px;
@@ -533,9 +617,10 @@ const createStyleTag = () => {
       cursor: pointer;
     }
     .assets-plus-tab.active {
-      background: var(--assets-plus-accent);
+      background: var(--assets-plus-card-bg);
       border-color: var(--assets-plus-accent);
-      color: var(--assets-plus-accent-contrast);
+      color: inherit;
+      box-shadow: 0 0 0 1px var(--assets-plus-accent) inset;
     }
     .assets-plus-button {
       border: 1px solid var(--assets-plus-border);
@@ -549,6 +634,17 @@ const createStyleTag = () => {
       opacity: 0.5;
       cursor: not-allowed;
     }
+    .assets-plus-settings-button {
+      border: 1px solid var(--border-color, rgba(148, 163, 184, 0.35));
+      background: var(--comfy-menu-secondary-bg, rgba(15, 23, 42, 0.6));
+      color: var(--fg-color, #e5e7eb);
+      padding: 6px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .assets-plus-settings-button:hover {
+      border-color: var(--p-primary-color, #2563eb);
+    }
     .assets-plus-input {
       width: 100%;
       padding: 6px 8px;
@@ -556,6 +652,12 @@ const createStyleTag = () => {
       border: 1px solid var(--assets-plus-border);
       background: var(--assets-plus-input-bg);
       color: inherit;
+    }
+    .assets-plus-search {
+      display: none;
+    }
+    .assets-plus-search.visible {
+      display: block;
     }
     .assets-plus-status {
       font-size: 12px;
@@ -587,7 +689,7 @@ const createStyleTag = () => {
       left: 6px;
       width: 16px;
       height: 16px;
-      accent-color: var(--assets-plus-accent);
+      accent-color: rgba(148, 163, 184, 0.9);
       z-index: 2;
       cursor: pointer;
     }
@@ -605,44 +707,83 @@ const createStyleTag = () => {
       height: 100%;
       object-fit: cover;
     }
-    .assets-plus-card-body {
-      padding: 8px;
+    .assets-plus-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .assets-plus-action-button {
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      background: var(--assets-plus-control-bg);
+      color: inherit;
+      padding: 6px 8px;
+      border-radius: 10px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 32px;
+      min-height: 32px;
+      box-shadow: 0 4px 10px rgba(15, 23, 42, 0.18);
+      backdrop-filter: blur(8px);
+    }
+    .assets-plus-action-button:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    .assets-plus-action-button .pi {
+      font-size: 14px;
+    }
+    .assets-plus-card-menu {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      z-index: 3;
+    }
+    .assets-plus-card-menu-button {
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      background: var(--assets-plus-control-bg);
+      color: inherit;
+      padding: 4px 6px;
+      border-radius: 8px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      backdrop-filter: blur(8px);
+    }
+    .assets-plus-context-menu {
+      position: fixed;
+      z-index: 1001;
+      display: none;
+      min-width: 200px;
+    }
+    .assets-plus-context-menu.open {
+      display: block;
+    }
+    .assets-plus-context-menu-list {
       display: flex;
       flex-direction: column;
       gap: 4px;
+      padding: 6px;
+      border-radius: 10px;
+      border: 1px solid var(--assets-plus-border);
+      background: var(--assets-plus-control-bg);
+      box-shadow: 0 8px 18px rgba(0, 0, 0, 0.25);
+      backdrop-filter: blur(8px);
     }
-    .assets-plus-filename {
-      font-size: 12px;
-      font-weight: 600;
-      word-break: break-all;
+    .assets-plus-context-menu-item {
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      background: var(--assets-plus-card-bg);
+      color: inherit;
+      padding: 6px 8px;
+      border-radius: 8px;
+      cursor: pointer;
+      text-align: left;
     }
-    .assets-plus-subtitle {
-      font-size: 11px;
-      opacity: 0.7;
-      word-break: break-all;
-    }
-    .assets-plus-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      font-size: 10px;
-      padding: 2px 6px;
-      border-radius: 999px;
-      border: 1px solid var(--assets-plus-accent);
-      color: var(--assets-plus-accent-contrast);
-      background: var(--assets-plus-accent);
-      width: fit-content;
-    }
-    .assets-plus-actions {
-      border-top: 1px solid var(--assets-plus-border);
-      padding-top: 8px;
-      display: none;
-      gap: 8px;
-      flex-wrap: wrap;
-      align-items: center;
-    }
-    .assets-plus-actions.active {
-      display: flex;
+    .assets-plus-context-menu-item:hover {
+      background: rgba(148, 163, 184, 0.2);
     }
     .assets-plus-overlay {
       position: fixed;
@@ -654,7 +795,7 @@ const createStyleTag = () => {
       visibility: hidden;
       transition: opacity 0.2s ease;
       z-index: 9999;
-      color: var(--fg-color, #e5e7eb);
+      color: #e5e7eb;
     }
     .assets-plus-overlay.active {
       opacity: 1;
@@ -855,15 +996,26 @@ class AssetsPlusExplorer {
   constructor(appInstance, container) {
     this.app = appInstance;
     this.container = container;
+    this.sidebarOverflowState = null;
+    this.sidebarContent = null;
     this.state = {
       tab: OUTPUT_TAB,
       items: [],
       loading: false,
       error: null,
       search: "",
+      searchVisible: false,
       selected: new Set(),
       config: null,
       pollId: null,
+      scrollPositions: {
+        [OUTPUT_TAB]: 0,
+        [INPUT_TAB]: 0,
+      },
+      contextMenu: {
+        relpath: null,
+        open: false,
+      },
       overlay: {
         relpath: null,
         zoom: 1,
@@ -878,20 +1030,34 @@ class AssetsPlusExplorer {
     };
     this.elements = {};
     this.overlayPanHandler = null;
+    this.documentClickHandler = (event) => this.handleDocumentClick(event);
     this.init();
   }
 
   init() {
     this.container.innerHTML = "";
+    this.container.classList.add("assets-plus-container");
+    this.sidebarContent = this.container.closest(".sidebar-content-container");
+    if (this.sidebarContent) {
+      this.sidebarOverflowState = {
+        overflow: this.sidebarContent.style.overflow,
+        overflowX: this.sidebarContent.style.overflowX,
+        overflowY: this.sidebarContent.style.overflowY,
+      };
+      this.sidebarContent.style.overflow = "hidden";
+      this.sidebarContent.style.overflowX = "hidden";
+      this.sidebarContent.style.overflowY = "hidden";
+    }
     const root = createElement("div", { className: "assets-plus-root" });
     const header = createElement("div", { className: "assets-plus-header" });
 
     const titleRow = createElement("div", { className: "assets-plus-title-row" });
     const title = createElement("div", { className: "assets-plus-title", text: t("app.title") });
     const refreshButton = createElement("button", {
-      className: "assets-plus-button",
-      text: t("actions.refresh"),
+      className: "assets-plus-action-button",
+      attrs: { title: t("actions.refresh"), "aria-label": t("actions.refresh") },
     });
+    refreshButton.innerHTML = '<i class="pi pi-refresh"></i>';
     titleRow.appendChild(title);
     titleRow.appendChild(refreshButton);
 
@@ -907,47 +1073,71 @@ class AssetsPlusExplorer {
     controls.appendChild(outputTab);
     controls.appendChild(inputTab);
 
+    const actionsBar = createElement("div", { className: "assets-plus-actions" });
+    const searchToggle = createElement("button", {
+      className: "assets-plus-action-button",
+      attrs: { title: t("actions.search"), "aria-label": t("actions.search") },
+    });
+    searchToggle.innerHTML = '<i class="pi pi-search"></i>';
+    const selectAllButton = createElement("button", {
+      className: "assets-plus-action-button",
+      attrs: { title: t("actions.select_all"), "aria-label": t("actions.select_all") },
+    });
+    selectAllButton.innerHTML = '<i class="pi pi-check-square"></i>';
+    const invertSelectionButton = createElement("button", {
+      className: "assets-plus-action-button",
+      attrs: { title: t("actions.invert_selection"), "aria-label": t("actions.invert_selection") },
+    });
+    invertSelectionButton.innerHTML = '<i class="pi pi-clone"></i>';
+    const downloadButton = createElement("button", {
+      className: "assets-plus-action-button",
+      attrs: { title: t("actions.download"), "aria-label": t("actions.download") },
+    });
+    downloadButton.innerHTML = '<i class="pi pi-download"></i>';
+    const deleteButton = createElement("button", {
+      className: "assets-plus-action-button",
+      attrs: { title: t("actions.delete"), "aria-label": t("actions.delete") },
+    });
+    deleteButton.innerHTML = '<i class="pi pi-trash"></i>';
+
+    actionsBar.appendChild(searchToggle);
+    actionsBar.appendChild(selectAllButton);
+    actionsBar.appendChild(invertSelectionButton);
+    actionsBar.appendChild(downloadButton);
+    actionsBar.appendChild(deleteButton);
+
     const searchInput = createElement("input", {
-      className: "assets-plus-input",
+      className: "assets-plus-input assets-plus-search",
       attrs: { placeholder: t("search.placeholder") },
     });
 
     header.appendChild(titleRow);
     header.appendChild(controls);
+    header.appendChild(actionsBar);
     header.appendChild(searchInput);
 
     const status = createElement("div", { className: "assets-plus-status" });
     const grid = createElement("div", { className: "assets-plus-grid" });
-
-    const actionsBar = createElement("div", { className: "assets-plus-actions" });
-    const selectionLabel = createElement("div", { className: "assets-plus-subtitle" });
-    const downloadButton = createElement("button", {
-      className: "assets-plus-button",
-      text: t("actions.download"),
-    });
-    const deleteButton = createElement("button", {
-      className: "assets-plus-button",
-      text: t("actions.delete"),
-    });
-    const openWorkflowButton = createElement("button", {
-      className: "assets-plus-button",
-      text: t("actions.open_workflow_new_tab"),
-    });
-    const replaceWorkflowButton = createElement("button", {
-      className: "assets-plus-button",
-      text: t("actions.replace_workflow"),
-    });
-
-    actionsBar.appendChild(selectionLabel);
-    actionsBar.appendChild(downloadButton);
-    actionsBar.appendChild(deleteButton);
-    actionsBar.appendChild(openWorkflowButton);
-    actionsBar.appendChild(replaceWorkflowButton);
+    const body = createElement("div", { className: "assets-plus-body" });
+    body.appendChild(status);
+    body.appendChild(grid);
 
     root.appendChild(header);
-    root.appendChild(status);
-    root.appendChild(grid);
-    root.appendChild(actionsBar);
+    root.appendChild(body);
+
+    const contextMenu = createElement("div", { className: "assets-plus-context-menu" });
+    const contextMenuList = createElement("div", { className: "assets-plus-context-menu-list" });
+    const contextMenuOpen = createElement("button", {
+      className: "assets-plus-context-menu-item",
+      text: t("actions.open_workflow_new_tab"),
+    });
+    const contextMenuReplace = createElement("button", {
+      className: "assets-plus-context-menu-item",
+      text: t("actions.replace_workflow"),
+    });
+    contextMenuList.appendChild(contextMenuOpen);
+    contextMenuList.appendChild(contextMenuReplace);
+    contextMenu.appendChild(contextMenuList);
 
     const overlay = createElement("div", { className: "assets-plus-overlay" });
     const overlayTop = createElement("div", { className: "assets-plus-overlay-top" });
@@ -1077,6 +1267,7 @@ class AssetsPlusExplorer {
     this.container.appendChild(createStyleTag());
     this.container.appendChild(root);
     this.container.appendChild(overlay);
+    document.body.appendChild(contextMenu);
 
     this.elements = {
       root,
@@ -1084,15 +1275,19 @@ class AssetsPlusExplorer {
       outputTab,
       inputTab,
       refreshButton,
+      searchToggle,
+      selectAllButton,
+      invertSelectionButton,
       searchInput,
       status,
       grid,
+      body,
+      contextMenu,
+      contextMenuOpen,
+      contextMenuReplace,
       actionsBar,
-      selectionLabel,
       downloadButton,
       deleteButton,
-      openWorkflowButton,
-      replaceWorkflowButton,
       overlay,
       overlayInfo,
       overlayClose,
@@ -1119,9 +1314,14 @@ class AssetsPlusExplorer {
       hintDeleteKey,
     };
 
+    this.updateSearchVisibility();
+
     refreshButton.addEventListener("click", () => this.refreshList());
     outputTab.addEventListener("click", () => this.setTab(OUTPUT_TAB));
     inputTab.addEventListener("click", () => this.setTab(INPUT_TAB));
+    searchToggle.addEventListener("click", () => this.toggleSearchVisibility());
+    selectAllButton.addEventListener("click", () => this.selectAllFiltered());
+    invertSelectionButton.addEventListener("click", () => this.invertSelection());
     searchInput.addEventListener("input", (event) => {
       this.state.search = event.target.value;
       this.renderGrid();
@@ -1129,8 +1329,15 @@ class AssetsPlusExplorer {
 
     downloadButton.addEventListener("click", () => this.handleDownload());
     deleteButton.addEventListener("click", () => this.handleDelete());
-    openWorkflowButton.addEventListener("click", () => this.openWorkflow(false));
-    replaceWorkflowButton.addEventListener("click", () => this.openWorkflow(true));
+    document.addEventListener("click", this.documentClickHandler);
+    contextMenuOpen.addEventListener("click", (event) => {
+      event.stopPropagation();
+      this.handleContextMenuAction("open");
+    });
+    contextMenuReplace.addEventListener("click", (event) => {
+      event.stopPropagation();
+      this.handleContextMenuAction("replace");
+    });
 
     overlayClose.addEventListener("click", () => this.closeOverlay());
     overlayPrev.addEventListener("click", () => this.navigateOverlay(-1));
@@ -1167,11 +1374,14 @@ class AssetsPlusExplorer {
       outputTab,
       inputTab,
       refreshButton,
+      searchToggle,
+      selectAllButton,
+      invertSelectionButton,
       searchInput,
       downloadButton,
       deleteButton,
-      openWorkflowButton,
-      replaceWorkflowButton,
+      contextMenuOpen,
+      contextMenuReplace,
       overlayClose,
       overlayPrev,
       overlayNext,
@@ -1183,12 +1393,33 @@ class AssetsPlusExplorer {
     if (title) title.textContent = t("app.title");
     if (outputTab) outputTab.textContent = t("tabs.output");
     if (inputTab) inputTab.textContent = t("tabs.input");
-    if (refreshButton) refreshButton.textContent = t("actions.refresh");
+    if (refreshButton) {
+      refreshButton.setAttribute("title", t("actions.refresh"));
+      refreshButton.setAttribute("aria-label", t("actions.refresh"));
+    }
+    if (searchToggle) {
+      searchToggle.setAttribute("title", t("actions.search"));
+      searchToggle.setAttribute("aria-label", t("actions.search"));
+    }
+    if (selectAllButton) {
+      selectAllButton.setAttribute("title", t("actions.select_all"));
+      selectAllButton.setAttribute("aria-label", t("actions.select_all"));
+    }
+    if (invertSelectionButton) {
+      invertSelectionButton.setAttribute("title", t("actions.invert_selection"));
+      invertSelectionButton.setAttribute("aria-label", t("actions.invert_selection"));
+    }
     if (searchInput) searchInput.setAttribute("placeholder", t("search.placeholder"));
-    if (downloadButton) downloadButton.textContent = t("actions.download");
-    if (deleteButton) deleteButton.textContent = t("actions.delete");
-    if (openWorkflowButton) openWorkflowButton.textContent = t("actions.open_workflow_new_tab");
-    if (replaceWorkflowButton) replaceWorkflowButton.textContent = t("actions.replace_workflow");
+    if (downloadButton) {
+      downloadButton.setAttribute("title", t("actions.download"));
+      downloadButton.setAttribute("aria-label", t("actions.download"));
+    }
+    if (deleteButton) {
+      deleteButton.setAttribute("title", t("actions.delete"));
+      deleteButton.setAttribute("aria-label", t("actions.delete"));
+    }
+    if (contextMenuOpen) contextMenuOpen.textContent = t("actions.open_workflow_new_tab");
+    if (contextMenuReplace) contextMenuReplace.textContent = t("actions.replace_workflow");
     if (overlayClose) overlayClose.setAttribute("aria-label", t("overlay.close"));
     if (overlayPrev) overlayPrev.setAttribute("aria-label", t("overlay.previous"));
     if (overlayNext) overlayNext.setAttribute("aria-label", t("overlay.next"));
@@ -1218,6 +1449,18 @@ class AssetsPlusExplorer {
   destroy() {
     this.stopPolling();
     this.detachOverlayHandlers();
+    document.removeEventListener("click", this.documentClickHandler);
+    if (this.elements?.contextMenu?.parentNode) {
+      this.elements.contextMenu.parentNode.removeChild(this.elements.contextMenu);
+    }
+    if (this.container) {
+      this.container.classList.remove("assets-plus-container");
+    }
+    if (this.sidebarContent && this.sidebarOverflowState) {
+      this.sidebarContent.style.overflow = this.sidebarOverflowState.overflow;
+      this.sidebarContent.style.overflowX = this.sidebarOverflowState.overflowX;
+      this.sidebarContent.style.overflowY = this.sidebarOverflowState.overflowY;
+    }
     this.container.innerHTML = "";
   }
 
@@ -1244,9 +1487,17 @@ class AssetsPlusExplorer {
     const config = this.state.config || {};
     const scanDepthSetting = this.getSetting(SETTINGS.scanDepth, config.scan_depth ?? 0);
     const scanDepth = Number(scanDepthSetting) > 0 ? Number(scanDepthSetting) : null;
-    const thumbnailSize = Number(
-      this.getSetting(SETTINGS.thumbnailSize, (config.thumbnail_size || [DEFAULT_THUMB_SIZE])[0])
+    const configThumbnailSize = Array.isArray(config.thumbnail_size)
+      ? config.thumbnail_size[0]
+      : config.thumbnail_size;
+    const fallbackQuality = resolveThumbnailQuality(
+      config.thumbnail_quality,
+      configThumbnailSize
     );
+    const thumbnailQuality = String(
+      this.getSetting(SETTINGS.thumbnailQuality, fallbackQuality)
+    );
+    const thumbnailSize = resolveThumbnailSize(thumbnailQuality, configThumbnailSize);
     return {
       pollSeconds: Number(this.getSetting(SETTINGS.pollSeconds, config.poll_seconds ?? DEFAULT_POLL_SECONDS)),
       listLimit: Number(this.getSetting(SETTINGS.listLimit, config.list_limit ?? DEFAULT_LIST_LIMIT)),
@@ -1265,7 +1516,8 @@ class AssetsPlusExplorer {
           DEFAULT_KEEP_OVERLAY_OPEN_ON_WORKFLOW
         )
       ),
-      thumbnailSize: Number.isFinite(thumbnailSize) ? thumbnailSize : DEFAULT_THUMB_SIZE,
+      thumbnailSize,
+      thumbnailQuality: resolveThumbnailQuality(thumbnailQuality, configThumbnailSize),
       extensions: (config.allowed_extensions || DEFAULT_EXTENSIONS).map((ext) =>
         ext.startsWith(".") ? ext.slice(1) : ext
       ),
@@ -1278,8 +1530,10 @@ class AssetsPlusExplorer {
 
   setTab(tab) {
     if (this.state.tab === tab) return;
+    this.rememberScrollPosition();
     this.state.tab = tab;
     this.state.selected = new Set();
+    this.state.scrollPositions[tab] = 0;
     this.closeOverlay();
     this.updateTabs();
     this.refreshList();
@@ -1291,6 +1545,20 @@ class AssetsPlusExplorer {
     outputTab.classList.toggle("active", this.state.tab === OUTPUT_TAB);
     inputTab.classList.toggle("active", this.state.tab === INPUT_TAB);
     this.updateActionsBar();
+  }
+
+  toggleSearchVisibility() {
+    this.state.searchVisible = !this.state.searchVisible;
+    this.updateSearchVisibility();
+  }
+
+  updateSearchVisibility() {
+    const { searchInput } = this.elements;
+    if (!searchInput) return;
+    searchInput.classList.toggle("visible", this.state.searchVisible);
+    if (this.state.searchVisible) {
+      searchInput.focus();
+    }
   }
 
   clearSelection() {
@@ -1309,6 +1577,48 @@ class AssetsPlusExplorer {
     });
   }
 
+  rememberScrollPosition() {
+    const body = this.elements.body;
+    if (!body) return;
+    this.state.scrollPositions[this.state.tab] = body.scrollTop;
+  }
+
+  restoreScrollPosition() {
+    const body = this.elements.body;
+    if (!body) return;
+    const target = this.state.scrollPositions[this.state.tab] ?? 0;
+    const maxScroll = Math.max(0, body.scrollHeight - body.clientHeight);
+    body.scrollTop = Math.min(target, maxScroll);
+  }
+
+  selectAllFiltered() {
+    const filtered = this.getFilteredItems();
+    if (!filtered.length) return;
+    filtered.forEach((item) => this.state.selected.add(item.relpath));
+    this.applySelectionStyles();
+    this.updateActionsBar();
+    if (this.state.overlay.relpath) {
+      this.updateOverlayView();
+    }
+  }
+
+  invertSelection() {
+    const filtered = this.getFilteredItems();
+    if (!filtered.length) return;
+    filtered.forEach((item) => {
+      if (this.state.selected.has(item.relpath)) {
+        this.state.selected.delete(item.relpath);
+      } else {
+        this.state.selected.add(item.relpath);
+      }
+    });
+    this.applySelectionStyles();
+    this.updateActionsBar();
+    if (this.state.overlay.relpath) {
+      this.updateOverlayView();
+    }
+  }
+
   setSelected(relpath, isSelected) {
     if (isSelected) {
       this.state.selected.add(relpath);
@@ -1322,16 +1632,34 @@ class AssetsPlusExplorer {
     }
   }
 
+  canDeleteCurrentTab() {
+    return this.state.tab === OUTPUT_TAB || this.state.tab === INPUT_TAB;
+  }
+
+  getDeleteEndpoint() {
+    if (!this.canDeleteCurrentTab()) {
+      return null;
+    }
+    return `/assets_plus/${this.state.tab}/delete`;
+  }
+
   updateActionsBar() {
     const selectionCount = this.state.selected.size;
-    const { actionsBar, selectionLabel, deleteButton, openWorkflowButton, replaceWorkflowButton } =
-      this.elements;
-    actionsBar.classList.toggle("active", selectionCount > 0);
-    selectionLabel.textContent = t("selection.label", { count: selectionCount });
-    deleteButton.style.display = this.state.tab === OUTPUT_TAB ? "inline-flex" : "none";
-    const singleSelection = selectionCount === 1;
-    openWorkflowButton.style.display = singleSelection ? "inline-flex" : "none";
-    replaceWorkflowButton.style.display = singleSelection ? "inline-flex" : "none";
+    const { downloadButton, deleteButton, selectAllButton } = this.elements;
+    const hasSelection = selectionCount > 0;
+    const filteredCount = this.getFilteredItems().length;
+    const allSelected = filteredCount > 0 && selectionCount >= filteredCount;
+    if (selectAllButton) {
+      selectAllButton.style.display = allSelected ? "none" : "inline-flex";
+    }
+    if (downloadButton) {
+      downloadButton.style.display = hasSelection ? "inline-flex" : "none";
+    }
+    if (deleteButton) {
+      deleteButton.style.display =
+        hasSelection && this.canDeleteCurrentTab() ? "inline-flex" : "none";
+    }
+    this.updateSearchVisibility();
   }
 
   applySelectionStyles() {
@@ -1344,8 +1672,90 @@ class AssetsPlusExplorer {
     });
   }
 
+  handleDocumentClick(event) {
+    if (event.target.closest(".assets-plus-context-menu")) return;
+    if (event.target.closest(".assets-plus-card-menu-button")) return;
+    this.closeContextMenu();
+  }
+
+  closeContextMenu() {
+    const { contextMenu } = this.elements;
+    if (!contextMenu) return;
+    contextMenu.classList.remove("open");
+    this.state.contextMenu.open = false;
+    this.state.contextMenu.relpath = null;
+  }
+
+  positionContextMenu(button) {
+    const { contextMenu } = this.elements;
+    if (!contextMenu || !button) return;
+    contextMenu.style.visibility = "hidden";
+    contextMenu.classList.add("open");
+    contextMenu.style.left = "0px";
+    contextMenu.style.top = "0px";
+    const menuRect = contextMenu.getBoundingClientRect();
+    const buttonRect = button.getBoundingClientRect();
+    const padding = 8;
+    let left = buttonRect.right + 6;
+    let top = buttonRect.bottom + 6;
+    if (left + menuRect.width > window.innerWidth - padding) {
+      left = Math.max(padding, buttonRect.left - menuRect.width - 6);
+    }
+    if (top + menuRect.height > window.innerHeight - padding) {
+      top = Math.max(padding, buttonRect.top - menuRect.height - 6);
+    }
+    contextMenu.style.left = `${left}px`;
+    contextMenu.style.top = `${top}px`;
+    contextMenu.style.visibility = "";
+  }
+
+  toggleContextMenu(item, button) {
+    if (!item || !button) return;
+    const { relpath, open } = this.state.contextMenu;
+    if (open && relpath === item.relpath) {
+      this.closeContextMenu();
+      return;
+    }
+    this.state.contextMenu.relpath = item.relpath;
+    this.state.contextMenu.open = true;
+    this.positionContextMenu(button);
+  }
+
+  handleContextMenuAction(action) {
+    const targetRelpath = this.state.contextMenu.relpath;
+    if (!targetRelpath) return;
+    const item = this.state.items.find((entry) => entry.relpath === targetRelpath);
+    if (!item) {
+      this.closeContextMenu();
+      return;
+    }
+    this.closeContextMenu();
+    if (action === "replace") {
+      this.openWorkflow(true, item);
+      return;
+    }
+    this.openWorkflow(false, item);
+  }
+
+  restoreContextMenu() {
+    if (!this.state.contextMenu.open || !this.state.contextMenu.relpath) return;
+    const relpath = this.state.contextMenu.relpath;
+    const safeRelpath =
+      typeof CSS !== "undefined" && CSS.escape
+        ? CSS.escape(relpath)
+        : relpath.replace(/["\\]/g, "\\$&");
+    const card = this.elements.grid?.querySelector(`[data-relpath="${safeRelpath}"]`);
+    const button = card?.querySelector(".assets-plus-card-menu-button");
+    if (!button) {
+      this.closeContextMenu();
+      return;
+    }
+    this.positionContextMenu(button);
+  }
+
   renderGrid() {
     const grid = this.elements.grid;
+    this.rememberScrollPosition();
     grid.innerHTML = "";
     const filtered = this.getFilteredItems();
 
@@ -1361,6 +1771,8 @@ class AssetsPlusExplorer {
 
     if (!filtered.length) {
       this.updateActionsBar();
+      this.restoreContextMenu();
+      this.restoreScrollPosition();
       return;
     }
 
@@ -1393,22 +1805,24 @@ class AssetsPlusExplorer {
         thumb.appendChild(image);
       }
 
-      const cardBody = createElement("div", { className: "assets-plus-card-body" });
-      cardBody.appendChild(
-        createElement("div", { className: "assets-plus-filename", text: item.filename })
-      );
-      cardBody.appendChild(
-        createElement("div", { className: "assets-plus-subtitle", text: item.relpath })
-      );
-      if (item.has_workflow) {
-        cardBody.appendChild(
-          createElement("div", { className: "assets-plus-badge", text: t("badge.workflow") })
-        );
-      }
-
       card.appendChild(checkbox);
       card.appendChild(thumb);
-      card.appendChild(cardBody);
+      const hasWorkflow = item.has_workflow && item.type === "image";
+      if (hasWorkflow) {
+        const menu = createElement("div", { className: "assets-plus-card-menu" });
+        const menuButton = createElement("button", {
+          className: "assets-plus-card-menu-button",
+          attrs: { title: t("actions.workflow_menu"), "aria-label": t("actions.workflow_menu") },
+        });
+        menuButton.innerHTML = '<i class="pi pi-bars"></i>';
+        menu.appendChild(menuButton);
+        card.appendChild(menu);
+
+        menuButton.addEventListener("click", (event) => {
+          event.stopPropagation();
+          this.toggleContextMenu(item, menuButton);
+        });
+      }
 
       checkbox.addEventListener("change", (event) => {
         this.setSelected(item.relpath, event.target.checked);
@@ -1418,6 +1832,10 @@ class AssetsPlusExplorer {
         if (event.target.closest(".assets-plus-checkbox")) {
           return;
         }
+        if (event.target.closest(".assets-plus-card-menu")) {
+          return;
+        }
+        this.closeContextMenu();
         this.openOverlay(item.relpath);
       });
 
@@ -1426,6 +1844,8 @@ class AssetsPlusExplorer {
 
     this.applySelectionStyles();
     this.updateActionsBar();
+    this.restoreContextMenu();
+    this.restoreScrollPosition();
   }
 
   async loadConfig() {
@@ -1541,6 +1961,8 @@ class AssetsPlusExplorer {
 
     const overlayRelpath = this.state.overlay.relpath;
     const deleteRelpaths = items.map((item) => item.relpath);
+    const deleteEndpoint = this.getDeleteEndpoint();
+    if (!deleteEndpoint) return;
     let nextOverlayRelpath = null;
     if (overlayRelpath && deleteRelpaths.includes(overlayRelpath)) {
       const filtered = this.getFilteredItems();
@@ -1564,7 +1986,7 @@ class AssetsPlusExplorer {
     }
 
     try {
-      await fetchJson("/assets_plus/output/delete", {
+      await fetchJson(deleteEndpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ relpaths: deleteRelpaths, mode }),
@@ -1598,9 +2020,11 @@ class AssetsPlusExplorer {
       `/assets_plus/${this.state.tab}/meta?relpath=${encodeURIComponent(asset.relpath)}`
     );
     const metadata = payload?.metadata ?? {};
-    const workflow = normalizeWorkflow(metadata.workflow);
+    const workflowRaw = metadata.workflow ?? null;
+    const workflow = normalizeWorkflow(workflowRaw);
     return {
       workflow,
+      workflowRaw,
       filename: workflowFilenameForAsset(asset.filename),
     };
   }
@@ -1609,7 +2033,7 @@ class AssetsPlusExplorer {
     const items = targetItem ? [targetItem] : this.getSelectedItems();
     if (items.length !== 1) return;
     try {
-      const { workflow, filename } = await this.extractWorkflow(items[0]);
+      const { workflow, workflowRaw, filename } = await this.extractWorkflow(items[0]);
       if (!workflow) {
         this.toast({
           severity: "warn",
@@ -1632,11 +2056,12 @@ class AssetsPlusExplorer {
         this.maybeCloseOverlayAfterWorkflow(options);
         return;
       }
-      const workflowActions = resolveWorkflowActionsService(this.app);
-      if (workflowActions?.openWorkflowAction) {
-        const result = await workflowActions.openWorkflowAction(workflow, filename);
-        if (!result?.success) {
-          throw new Error(result?.error || "Failed to open workflow");
+      const workflowStore = resolveWorkflowStore(this.app);
+      if (workflowStore?.createTemporary && workflowStore?.openWorkflow) {
+        const temp = workflowStore.createTemporary(filename);
+        await workflowStore.openWorkflow(temp);
+        if (this.app?.loadGraphData) {
+          await this.app.loadGraphData(workflow, true, true, temp);
         }
         this.toast({
           severity: "success",
@@ -1647,10 +2072,13 @@ class AssetsPlusExplorer {
         this.maybeCloseOverlayAfterWorkflow(options);
         return;
       }
-      const workflowStore = resolveWorkflowStore(this.app);
-      if (workflowStore?.createTemporary && workflowStore?.openWorkflow) {
-        const temp = workflowStore.createTemporary(filename, workflow);
-        await workflowStore.openWorkflow(temp);
+      const workflowActions = resolveWorkflowActionsService(this.app);
+      if (workflowActions?.openWorkflowAction) {
+        const workflowPayload = workflowRaw ?? workflow;
+        const result = await workflowActions.openWorkflowAction(workflowPayload, filename);
+        if (!result?.success) {
+          throw new Error(result?.error || "Failed to open workflow");
+        }
         this.toast({
           severity: "success",
           summary: t("toast.summary"),
@@ -1794,7 +2222,7 @@ class AssetsPlusExplorer {
       this.navigateOverlay("last");
     } else if (action === "delete") {
       const item = this.getOverlayItem();
-      if (item && this.state.tab === OUTPUT_TAB) {
+      if (item && this.canDeleteCurrentTab()) {
         this.handleDelete(item);
       }
     }
@@ -1888,7 +2316,7 @@ class AssetsPlusExplorer {
     const { showOverlayHelp } = this.getSettingsSnapshot();
     overlayHint.style.display = showOverlayHelp ? "grid" : "none";
     if (hintDelete) {
-      hintDelete.disabled = this.state.tab !== OUTPUT_TAB;
+      hintDelete.disabled = !this.canDeleteCurrentTab();
     }
     this.updateOverlayShortcutHints();
   }
@@ -2040,6 +2468,22 @@ const boot = async () => {
   const selectedLanguage = languageSetting || DEFAULT_LANGUAGE;
   await applyLanguage(selectedLanguage, { force: true });
   const languageOptions = buildLanguageOptions(translationsList);
+  const toast = (detail, severity = "info") => {
+    appInstance?.extensionManager?.toast?.add?.({
+      summary: t("toast.summary"),
+      detail,
+      severity,
+    });
+  };
+  const handleClearThumbnails = async () => {
+    try {
+      await fetchJson("/assets_plus/thumb/clear", { method: "POST" });
+      toast(t("toast.thumbnails_cleared"));
+    } catch (error) {
+      warn(t("log.clear_thumbnails_failed"), error);
+      toast(t("toast.thumbnails_clear_failed"), "error");
+    }
+  };
 
   appInstance.registerExtension({
     name: EXTENSION_NAME,
@@ -2052,7 +2496,7 @@ const boot = async () => {
       applyLanguage(nextLanguage).catch((error) => {
         warn(t("log.translation_load_failed", { language: nextLanguage }), error);
       });
-    }),
+    }, handleClearThumbnails),
     setup(app) {
       registerSidebarTab(app);
     },

@@ -19,7 +19,7 @@ class AssetsPlusConfig:
         ".mp4",
         ".webm",
     )
-    thumbnail_size: tuple[int, int] = (256, 256)
+    thumbnail_quality: str = "low"
     list_limit: int = 500
     recursive: bool = True
     poll_seconds: int = 5
@@ -28,6 +28,11 @@ class AssetsPlusConfig:
 
 
 DEFAULT_CONFIG = AssetsPlusConfig()
+THUMBNAIL_QUALITY_SIZES: dict[str, tuple[int, int]] = {
+    "low": (256, 256),
+    "high": (512, 512),
+}
+DEFAULT_THUMBNAIL_QUALITY = "low"
 
 LOGGER = logging.getLogger("assets_plus")
 
@@ -37,18 +42,36 @@ def config_path() -> Path:
     return user_dir / "__assets_plus" / "config.json"
 
 
-def _coerce_thumbnail_size(value: Any) -> tuple[int, int] | None:
+def _coerce_thumbnail_quality(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.lower().strip()
+    if normalized in THUMBNAIL_QUALITY_SIZES:
+        return normalized
+    return None
+
+
+def _infer_quality_from_size(value: Any) -> str | None:
     if isinstance(value, (list, tuple)) and len(value) >= 2:
         try:
             width = int(value[0])
             height = int(value[1])
-            return (width, height)
+            size = max(width, height)
         except (TypeError, ValueError):
             return None
-    if isinstance(value, (int, float)):
-        size = int(value)
-        return (size, size)
-    return None
+    elif isinstance(value, (int, float)):
+        try:
+            size = int(value)
+        except (TypeError, ValueError):
+            return None
+    else:
+        return None
+    return "high" if size >= 512 else "low"
+
+
+def thumbnail_size_from_quality(quality: str | None) -> tuple[int, int]:
+    resolved = (quality or "").lower().strip()
+    return THUMBNAIL_QUALITY_SIZES.get(resolved, THUMBNAIL_QUALITY_SIZES[DEFAULT_THUMBNAIL_QUALITY])
 
 
 def _coerce_scan_depth(value: Any) -> int | None:
@@ -83,7 +106,11 @@ def load_config() -> AssetsPlusConfig:
     else:
         allowed_extensions = DEFAULT_CONFIG.allowed_extensions
 
-    thumbnail_size = _coerce_thumbnail_size(raw.get("thumbnail_size")) or DEFAULT_CONFIG.thumbnail_size
+    thumbnail_quality = _coerce_thumbnail_quality(raw.get("thumbnail_quality"))
+    if not thumbnail_quality:
+        thumbnail_quality = _infer_quality_from_size(raw.get("thumbnail_size"))
+    if not thumbnail_quality:
+        thumbnail_quality = DEFAULT_CONFIG.thumbnail_quality
 
     try:
         list_limit = int(raw.get("list_limit", DEFAULT_CONFIG.list_limit))
@@ -108,7 +135,7 @@ def load_config() -> AssetsPlusConfig:
 
     return AssetsPlusConfig(
         allowed_extensions=allowed_extensions,
-        thumbnail_size=thumbnail_size,
+        thumbnail_quality=thumbnail_quality,
         list_limit=list_limit,
         recursive=recursive,
         poll_seconds=poll_seconds,

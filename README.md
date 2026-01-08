@@ -4,7 +4,7 @@
 </p>
 
 Assets+ is an extension for ComfyUI that adds the **Assets+ Explorer** sidebar panel and provides a
-persistent overview of the output directory via the `/assets_plus` API.
+persistent overview of the output and input directories via the `/assets_plus` API.
 
 ## Installation
 
@@ -33,7 +33,7 @@ defaults are used.
 
 Available options:
 - `allowed_extensions`: a list of extensions (e.g. `[".png", ".jpg", ".webp"]`).
-- `thumbnail_size`: thumbnail size, either a number or an array `[w, h]`.
+- `thumbnail_quality`: `"low"` (256px) or `"high"` (512px).
 - `list_limit`: maximum number of items returned per request.
 - `recursive`: recursive scan of the output directory (`true/false`).
 - `poll_seconds`: auto-refresh interval (seconds).
@@ -44,12 +44,14 @@ UI settings (ComfyUI Settings → Assets+ Explorer):
 - **Assets+ confirm deletions** — toggle confirmation dialogs for delete/hide actions.
 - **Assets+ show overlay navigation hint** — toggle the on-screen navigation hint in the lens overlay.
 - **Assets+ keep overlay open when opening/replacing workflow** — keep the lens overlay open after workflow actions.
+- **Assets+ thumbnail quality** — pick low (256px) or high (512px) previews.
+- **Assets+ clear thumbnail cache** — action button to remove cached previews on disk.
 
 Example:
 ```json
 {
   "allowed_extensions": [".png", ".jpg", ".jpeg", ".webp", ".mp4", ".webm"],
-  "thumbnail_size": [256, 256],
+  "thumbnail_quality": "low",
   "list_limit": 500,
   "recursive": true,
   "poll_seconds": 5,
@@ -60,13 +62,14 @@ Example:
 
 ## Features
 
-* List assets from the output directory (recursively).
-* Thumbnails via `/assets_plus/output/thumb`.
-* Workflow/prompt metadata via `/assets_plus/output/meta`.
-* Deleting from disk (trash/delete) or hiding (hide) with confirmation.
+* List assets from the output and input directories (recursively).
+* Thumbnails via `/assets_plus/output/thumb` and `/assets_plus/input/thumb`.
+* Workflow/prompt metadata via `/assets_plus/output/meta` and `/assets_plus/input/meta`.
+* Deleting from disk (trash/delete) or hiding (hide) with confirmation in both tabs.
 * Full-screen lens overlay with navigation, workflow actions, zoom/pan controls, and keybindings registered in ComfyUI.
 * Assets+ shortcuts tab in the ComfyUI Shortcuts panel for overlay navigation actions.
 * Multi-selection via checkboxes on each asset tile.
+* Sticky header with icon-based actions (search toggle, select all, invert selection, download/delete) while only the gallery area scrolls.
 * Auto-refresh list (polling every 5 seconds).
 
 ## Deletion modes
@@ -79,16 +82,16 @@ Example:
 
 ## Workflow actions
 
-If an asset has workflow metadata:
+If an asset has workflow metadata, the tile menu (burger button in the top-right corner) exposes:
 
 * **Open workflow (new tab)** — opens the workflow in a new tab (like standard Media Assets).
 * **Replace current workflow** — replaces the workflow in the current tab without creating a new one.
 
-If there’s no metadata, the buttons will be disabled.
+If there’s no metadata, the menu is hidden.
 
 ## Limitations
 
-* Asset source is ComfyUI’s output directory only (no arbitrary paths).
+* Asset sources are ComfyUI’s output/input directories only (no arbitrary paths).
 * Videos (`.mp4/.webm`) are served as-is; no thumbnails are generated.
 * Auto-refresh is implemented via polling (interval in `poll_seconds`).
 * Delete confirmations can be disabled in Settings (Assets+ confirm deletions).
@@ -104,5 +107,6 @@ The extension structure matches Manager requirements:
 ## Notes
 
 * `send2trash` is used for moving to trash (if available).
-* Hidden assets are stored in `user/__assets_plus/hidden.json`.
+* Hidden assets are stored in `user/__assets_plus/hidden.json` (input entries are namespaced).
 * Thumbnail cache: `user/__assets_plus/thumb_cache/`.
+* The thumbnail cache can be cleared from settings or via `POST /assets_plus/thumb/clear`.
