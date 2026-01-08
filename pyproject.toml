@@ -1,7 +1,7 @@
 [project]
 name = "ComfyUI-AssetsPlus"
 description = "Adds 'Assets+' tool to ComfyUI sidebar, which builds upon 'Media Assets' idea albeit expands it to bring Gallery-like experience to Windows machines"
-version = "0.2.13"
+version = "0.2.14-OBT"
 license = {file = "LICENSE"} 
 classifiers = [
     "Operating System :: Microsoft :: Windows"

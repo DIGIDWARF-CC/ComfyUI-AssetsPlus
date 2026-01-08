@@ -105,8 +105,10 @@ def list_directory_items(
     scan_depth: int | None,
     hidden: dict[str, HiddenEntry] | None = None,
     hidden_prefix: str = "",
+    query: str | None = None,
 ) -> list[dict[str, Any]]:
     hidden = hidden or {}
+    query_normalized = query.strip().lower() if query else ""
     items: list[dict[str, Any]] = []
     for path in iter_output_files(base_dir, recursive, scan_depth):
         if not path.is_file():
@@ -114,6 +116,10 @@ def list_directory_items(
         relpath = path.relative_to(base_dir).as_posix()
         if not allowed_extension(path.name, extensions):
             continue
+        if query_normalized:
+            haystack = f"{path.name} {relpath}".lower()
+            if query_normalized not in haystack:
+                continue
         stat = path.stat()
         hidden_key = f"{hidden_prefix}{relpath}" if hidden_prefix else relpath
         hidden_entry = hidden.get(hidden_key)
@@ -130,7 +136,7 @@ def list_directory_items(
                 "has_workflow": file_type == "image" and has_workflow_metadata(path),
             }
         )
-    items.sort(key=lambda item: item["mtime"], reverse=True)
+    items.sort(key=lambda item: (-item["mtime"], item["relpath"]))
     return items
 
 
@@ -199,6 +205,50 @@ def clear_thumb_cache() -> int:
     return removed
 
 
+def parse_cursor(raw: str | None) -> tuple[int, str, bool] | None:
+    if not raw:
+        return None
+    if ":" in raw:
+        mtime_raw, relpath = raw.split(":", 1)
+        try:
+            return int(mtime_raw), relpath, True
+        except ValueError:
+            return None
+    try:
+        return int(raw), "", False
+    except ValueError:
+        return None
+
+
+def encode_cursor(item: dict[str, Any]) -> str:
+    return f"{item['mtime']}:{item['relpath']}"
+
+
+def apply_cursor_filter(
+    items: list[dict[str, Any]],
+    cursor: tuple[int, str, bool] | None,
+) -> list[dict[str, Any]]:
+    if not cursor:
+        return items
+    mtime, relpath, has_relpath = cursor
+    if has_relpath:
+        return [
+            item
+            for item in items
+            if item["mtime"] < mtime or (item["mtime"] == mtime and item["relpath"] > relpath)
+        ]
+    return [item for item in items if item["mtime"] < mtime]
+
+
+def apply_since_filter(
+    items: list[dict[str, Any]],
+    since: int | None,
+) -> list[dict[str, Any]]:
+    if since is None:
+        return items
+    return [item for item in items if item["mtime"] > since]
+
+
 @PromptServer.instance.routes.get("/assets_plus/output/list")
 async def output_list(request: web.Request) -> web.Response:
     config = load_config()
@@ -224,21 +274,44 @@ async def output_list(request: web.Request) -> web.Response:
         scan_depth = None
     recursive = params.get("recursive", "1") not in {"0", "false", "False"}
     limit = int(params.get("limit", config.list_limit))
-    cursor = params.get("cursor")
+    cursor = parse_cursor(params.get("cursor"))
+    query = params.get("query") or params.get("q")
+    since_param = params.get("since")
+    since = None
+    if since_param is not None:
+        try:
+            since = int(since_param)
+        except ValueError:
+            since = None
 
     output_dir = get_output_directory()
     hidden = load_hidden()
-    items = list_directory_items(output_dir, extensions, recursive, scan_depth, hidden=hidden)
-    if cursor:
-        try:
-            cursor_value = int(cursor)
-        except ValueError:
-            cursor_value = 0
-        items = [item for item in items if item["mtime"] > cursor_value]
+    items = list_directory_items(
+        output_dir,
+        extensions,
+        recursive,
+        scan_depth,
+        hidden=hidden,
+        query=query,
+    )
+    latest_mtime = items[0]["mtime"] if items else 0
+    if since is not None:
+        items = apply_since_filter(items, since)
+    else:
+        items = apply_cursor_filter(items, cursor)
+    has_more = False
     if limit:
+        has_more = len(items) > limit
         items = items[:limit]
-    next_cursor = str(items[0]["mtime"]) if items else cursor or "0"
-    return web.json_response({"items": items, "cursor": next_cursor})
+    next_cursor = encode_cursor(items[-1]) if items else params.get("cursor") or ""
+    return web.json_response(
+        {
+            "items": items,
+            "cursor": next_cursor,
+            "has_more": has_more,
+            "latest_mtime": latest_mtime,
+        }
+    )
 
 
 @PromptServer.instance.routes.get("/assets_plus/input/list")
@@ -266,7 +339,15 @@ async def input_list(request: web.Request) -> web.Response:
         scan_depth = None
     recursive = params.get("recursive", "1") not in {"0", "false", "False"}
     limit = int(params.get("limit", config.list_limit))
-    cursor = params.get("cursor")
+    cursor = parse_cursor(params.get("cursor"))
+    query = params.get("query") or params.get("q")
+    since_param = params.get("since")
+    since = None
+    if since_param is not None:
+        try:
+            since = int(since_param)
+        except ValueError:
+            since = None
 
     input_dir = get_input_directory()
     hidden = load_hidden()
@@ -277,17 +358,26 @@ async def input_list(request: web.Request) -> web.Response:
         scan_depth,
         hidden=hidden,
         hidden_prefix="input/",
+        query=query,
     )
-    if cursor:
-        try:
-            cursor_value = int(cursor)
-        except ValueError:
-            cursor_value = 0
-        items = [item for item in items if item["mtime"] > cursor_value]
+    latest_mtime = items[0]["mtime"] if items else 0
+    if since is not None:
+        items = apply_since_filter(items, since)
+    else:
+        items = apply_cursor_filter(items, cursor)
+    has_more = False
     if limit:
+        has_more = len(items) > limit
         items = items[:limit]
-    next_cursor = str(items[0]["mtime"]) if items else cursor or "0"
-    return web.json_response({"items": items, "cursor": next_cursor})
+    next_cursor = encode_cursor(items[-1]) if items else params.get("cursor") or ""
+    return web.json_response(
+        {
+            "items": items,
+            "cursor": next_cursor,
+            "has_more": has_more,
+            "latest_mtime": latest_mtime,
+        }
+    )
 
 
 @PromptServer.instance.routes.get("/assets_plus/config")
@@ -301,7 +391,6 @@ async def assets_plus_config(_: web.Request) -> web.Response:
             "thumbnail_size": list(thumbnail_size),
             "list_limit": config.list_limit,
             "recursive": config.recursive,
-            "poll_seconds": config.poll_seconds,
             "default_delete_mode": config.default_delete_mode,
             "scan_depth": config.scan_depth,
         }

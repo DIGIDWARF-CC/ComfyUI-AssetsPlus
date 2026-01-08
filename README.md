@@ -1,10 +1,14 @@
-# Assets+
+# ComfyUI-AssetsPlus <img alt="Static Badge" src="https://img.shields.io/badge/OpenAI-Codex-gray?style=plastic&label=OpenAI&labelColor=0fa37f&color=gray">
 <p align="center">
   <img src="/meta/img/logo_1024x700.png" alt="ai-generated assets-plus logo" width="600"/>
 </p>
 
 Assets+ is an extension for ComfyUI that adds the **Assets+ Explorer** sidebar panel and provides a
 persistent overview of the output and input directories via the `/assets_plus` API.
+
+## Disclaimer about AI usage
+* This extension code was written almost purely by OpenAI Codex. Please report any quirks or mishaps at Issues page.
+* Any PRs will be greatly appreciated, thank you!
 
 ## Installation
 
@@ -34,13 +38,13 @@ defaults are used.
 Available options:
 - `allowed_extensions`: a list of extensions (e.g. `[".png", ".jpg", ".webp"]`).
 - `thumbnail_quality`: `"low"` (256px) or `"high"` (512px).
-- `list_limit`: maximum number of items returned per request.
+- `list_limit`: page size for list requests.
 - `recursive`: recursive scan of the output directory (`true/false`).
-- `poll_seconds`: auto-refresh interval (seconds).
 - `default_delete_mode`: `"trash" | "delete" | "hide"`.
 - `scan_depth`: depth limit for recursive scanning (`null` = no limit).
 
 UI settings (ComfyUI Settings → Assets+ Explorer):
+- **Assets+ page size** — number of items fetched per page.
 - **Assets+ confirm deletions** — toggle confirmation dialogs for delete/hide actions.
 - **Assets+ show overlay navigation hint** — toggle the on-screen navigation hint in the lens overlay.
 - **Assets+ keep overlay open when opening/replacing workflow** — keep the lens overlay open after workflow actions.
@@ -52,9 +56,8 @@ Example:
 {
   "allowed_extensions": [".png", ".jpg", ".jpeg", ".webp", ".mp4", ".webm"],
   "thumbnail_quality": "low",
-  "list_limit": 500,
+  "list_limit": 200,
   "recursive": true,
-  "poll_seconds": 5,
   "default_delete_mode": "trash",
   "scan_depth": null
 }
@@ -70,7 +73,9 @@ Example:
 * Assets+ shortcuts tab in the ComfyUI Shortcuts panel for overlay navigation actions.
 * Multi-selection via checkboxes on each asset tile.
 * Sticky header with icon-based actions (search toggle, select all, invert selection, download/delete) while only the gallery area scrolls.
-* Auto-refresh list (polling every 5 seconds).
+* Server-side search optimized for large galleries.
+* Lazy loading of thumbnails and paged scrolling for large galleries.
+* Event-driven updates when ComfyUI emits execution or upload events (no polling).
 
 ## Deletion modes
 
@@ -93,7 +98,7 @@ If there’s no metadata, the menu is hidden.
 
 * Asset sources are ComfyUI’s output/input directories only (no arbitrary paths).
 * Videos (`.mp4/.webm`) are served as-is; no thumbnails are generated.
-* Auto-refresh is implemented via polling (interval in `poll_seconds`).
+* Search is executed by the backend (depends on `/assets_plus/*/list?query=`).
 * Delete confirmations can be disabled in Settings (Assets+ confirm deletions).
 
 ## ComfyUI-Manager compatibility

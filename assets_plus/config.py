@@ -20,9 +20,8 @@ class AssetsPlusConfig:
         ".webm",
     )
     thumbnail_quality: str = "low"
-    list_limit: int = 500
+    list_limit: int = 200
     recursive: bool = True
-    poll_seconds: int = 5
     default_delete_mode: str = "trash"
     scan_depth: int | None = None
 
@@ -116,16 +115,12 @@ def load_config() -> AssetsPlusConfig:
         list_limit = int(raw.get("list_limit", DEFAULT_CONFIG.list_limit))
     except (TypeError, ValueError):
         list_limit = DEFAULT_CONFIG.list_limit
+    if list_limit <= 0:
+        list_limit = DEFAULT_CONFIG.list_limit
 
     recursive = raw.get("recursive", DEFAULT_CONFIG.recursive)
     if not isinstance(recursive, bool):
         recursive = DEFAULT_CONFIG.recursive
-
-    try:
-        poll_seconds = int(raw.get("poll_seconds", DEFAULT_CONFIG.poll_seconds))
-    except (TypeError, ValueError):
-        poll_seconds = DEFAULT_CONFIG.poll_seconds
-    poll_seconds = max(1, poll_seconds)
 
     default_delete_mode = raw.get("default_delete_mode", DEFAULT_CONFIG.default_delete_mode)
     if default_delete_mode not in {"trash", "delete", "hide"}:
@@ -138,7 +133,6 @@ def load_config() -> AssetsPlusConfig:
         thumbnail_quality=thumbnail_quality,
         list_limit=list_limit,
         recursive=recursive,
-        poll_seconds=poll_seconds,
         default_delete_mode=default_delete_mode,
         scan_depth=scan_depth,
     )

@@ -7,7 +7,6 @@ const OUTPUT_TAB = "output";
 const INPUT_TAB = "input";
 
 const DEFAULT_EXTENSIONS = ["png", "jpg", "jpeg", "webp", "mp4", "webm"];
-const DEFAULT_POLL_SECONDS = 5;
 const DEFAULT_LIST_LIMIT = 200;
 const DEFAULT_THUMB_QUALITY = "low";
 const THUMB_QUALITY_SIZES = {
@@ -51,7 +50,6 @@ const OVERLAY_KEYBINDINGS = [
 ];
 
 const SETTINGS = {
-  pollSeconds: "AssetsPlus.PollSeconds",
   listLimit: "AssetsPlus.ListLimit",
   recursive: "AssetsPlus.RecursiveScan",
   scanDepth: "AssetsPlus.ScanDepth",
@@ -277,13 +275,6 @@ const buildSettingsSchema = (t, languageOptions, handleLanguageChange, handleCle
   const settingsGroup = t("settings.group");
   const withCategory = (setting) => applySettingsCategory(setting, settingsGroup);
   return [
-    withCategory({
-      id: SETTINGS.pollSeconds,
-      name: t("settings.poll_seconds"),
-      type: "number",
-      defaultValue: DEFAULT_POLL_SECONDS,
-      attrs: { min: 1, step: 1 },
-    }),
     withCategory({
       id: SETTINGS.listLimit,
       name: t("settings.list_limit"),
@@ -1002,12 +993,21 @@ class AssetsPlusExplorer {
       tab: OUTPUT_TAB,
       items: [],
       loading: false,
+      loadingMore: false,
       error: null,
       search: "",
       searchVisible: false,
       selected: new Set(),
       config: null,
-      pollId: null,
+      cursor: "",
+      hasMore: true,
+      latestMtime: 0,
+      searchDebounceId: null,
+      scrollTicking: false,
+      pendingRefresh: {
+        [OUTPUT_TAB]: false,
+        [INPUT_TAB]: false,
+      },
       scrollPositions: {
         [OUTPUT_TAB]: 0,
         [INPUT_TAB]: 0,
@@ -1031,6 +1031,9 @@ class AssetsPlusExplorer {
     this.elements = {};
     this.overlayPanHandler = null;
     this.documentClickHandler = (event) => this.handleDocumentClick(event);
+    this.thumbObserver = null;
+    this.scrollHandler = null;
+    this.apiEventHandlers = [];
     this.init();
   }
 
@@ -1314,6 +1317,10 @@ class AssetsPlusExplorer {
       hintDeleteKey,
     };
 
+    this.scrollHandler = () => this.handleScroll();
+    body.addEventListener("scroll", this.scrollHandler);
+    this.setupThumbObserver();
+
     this.updateSearchVisibility();
 
     refreshButton.addEventListener("click", () => this.refreshList());
@@ -1323,8 +1330,7 @@ class AssetsPlusExplorer {
     selectAllButton.addEventListener("click", () => this.selectAllFiltered());
     invertSelectionButton.addEventListener("click", () => this.invertSelection());
     searchInput.addEventListener("input", (event) => {
-      this.state.search = event.target.value;
-      this.renderGrid();
+      this.handleSearchInput(event.target.value);
     });
 
     downloadButton.addEventListener("click", () => this.handleDownload());
@@ -1365,7 +1371,7 @@ class AssetsPlusExplorer {
       .then(() => this.refreshList())
       .catch(() => this.refreshList());
 
-    this.startPolling();
+    this.registerApiEvents();
   }
 
   updateTranslations() {
@@ -1439,7 +1445,7 @@ class AssetsPlusExplorer {
     this.updateActionsBar();
     this.updateOverlayShortcutHints();
     this.updateOverlayHelpVisibility();
-    this.renderGrid();
+    this.renderGrid({ reset: true });
   }
 
   detachOverlayHandlers() {
@@ -1447,7 +1453,15 @@ class AssetsPlusExplorer {
   }
 
   destroy() {
-    this.stopPolling();
+    this.unregisterApiEvents();
+    this.disconnectThumbObserver();
+    if (this.state.searchDebounceId) {
+      window.clearTimeout(this.state.searchDebounceId);
+      this.state.searchDebounceId = null;
+    }
+    if (this.scrollHandler && this.elements?.body) {
+      this.elements.body.removeEventListener("scroll", this.scrollHandler);
+    }
     this.detachOverlayHandlers();
     document.removeEventListener("click", this.documentClickHandler);
     if (this.elements?.contextMenu?.parentNode) {
@@ -1498,9 +1512,13 @@ class AssetsPlusExplorer {
       this.getSetting(SETTINGS.thumbnailQuality, fallbackQuality)
     );
     const thumbnailSize = resolveThumbnailSize(thumbnailQuality, configThumbnailSize);
+    const listLimitRaw = Number(
+      this.getSetting(SETTINGS.listLimit, config.list_limit ?? DEFAULT_LIST_LIMIT)
+    );
+    const listLimit =
+      Number.isFinite(listLimitRaw) && listLimitRaw > 0 ? listLimitRaw : DEFAULT_LIST_LIMIT;
     return {
-      pollSeconds: Number(this.getSetting(SETTINGS.pollSeconds, config.poll_seconds ?? DEFAULT_POLL_SECONDS)),
-      listLimit: Number(this.getSetting(SETTINGS.listLimit, config.list_limit ?? DEFAULT_LIST_LIMIT)),
+      listLimit,
       recursive: Boolean(this.getSetting(SETTINGS.recursive, config.recursive ?? true)),
       scanDepth,
       deleteMode: String(this.getSetting(SETTINGS.deleteMode, config.default_delete_mode ?? DEFAULT_DELETE_MODE)),
@@ -1537,7 +1555,6 @@ class AssetsPlusExplorer {
     this.closeOverlay();
     this.updateTabs();
     this.refreshList();
-    this.startPolling();
   }
 
   updateTabs() {
@@ -1561,6 +1578,62 @@ class AssetsPlusExplorer {
     }
   }
 
+  handleSearchInput(value) {
+    this.state.search = value;
+    if (this.state.searchDebounceId) {
+      window.clearTimeout(this.state.searchDebounceId);
+    }
+    this.state.searchDebounceId = window.setTimeout(() => {
+      this.state.searchDebounceId = null;
+      this.refreshList();
+    }, 250);
+  }
+
+  registerApiEvents() {
+    this.unregisterApiEvents();
+    if (!api?.addEventListener) return;
+    const handleOutput = () => this.handlePossibleMutation(OUTPUT_TAB);
+    const handleInput = () => this.handlePossibleMutation(INPUT_TAB);
+    const outputEvents = [
+      "executed",
+      "execution_success",
+      "execution_error",
+      "execution_interrupted",
+    ];
+    outputEvents.forEach((eventName) => {
+      api.addEventListener(eventName, handleOutput);
+      this.apiEventHandlers.push({ eventName, handler: handleOutput });
+    });
+    const inputEvents = ["upload", "uploaded", "upload_complete"];
+    inputEvents.forEach((eventName) => {
+      api.addEventListener(eventName, handleInput);
+      this.apiEventHandlers.push({ eventName, handler: handleInput });
+    });
+  }
+
+  unregisterApiEvents() {
+    if (!api?.removeEventListener) {
+      this.apiEventHandlers = [];
+      return;
+    }
+    this.apiEventHandlers.forEach(({ eventName, handler }) => {
+      api.removeEventListener(eventName, handler);
+    });
+    this.apiEventHandlers = [];
+  }
+
+  handlePossibleMutation(tab) {
+    if (!this.elements.root?.offsetParent) {
+      this.state.pendingRefresh[tab] = true;
+      return;
+    }
+    if (this.state.tab !== tab) {
+      this.state.pendingRefresh[tab] = true;
+      return;
+    }
+    this.refreshNewItems();
+  }
+
   clearSelection() {
     this.state.selected = new Set();
   }
@@ -1570,11 +1643,7 @@ class AssetsPlusExplorer {
   }
 
   getFilteredItems() {
-    return this.state.items.filter((item) => {
-      if (!this.state.search) return true;
-      const haystack = `${item.filename} ${item.relpath}`.toLowerCase();
-      return haystack.includes(this.state.search.toLowerCase());
-    });
+    return this.state.items;
   }
 
   rememberScrollPosition() {
@@ -1589,6 +1658,26 @@ class AssetsPlusExplorer {
     const target = this.state.scrollPositions[this.state.tab] ?? 0;
     const maxScroll = Math.max(0, body.scrollHeight - body.clientHeight);
     body.scrollTop = Math.min(target, maxScroll);
+  }
+
+  handleScroll() {
+    if (this.state.scrollTicking) return;
+    this.state.scrollTicking = true;
+    window.requestAnimationFrame(() => {
+      this.state.scrollTicking = false;
+      this.maybeLoadNextPage();
+    });
+  }
+
+  maybeLoadNextPage() {
+    if (this.state.loading || this.state.loadingMore) return;
+    if (!this.state.hasMore) return;
+    const body = this.elements.body;
+    if (!body) return;
+    const threshold = 480;
+    if (body.scrollTop + body.clientHeight >= body.scrollHeight - threshold) {
+      this.loadNextPage();
+    }
   }
 
   selectAllFiltered() {
@@ -1753,99 +1842,165 @@ class AssetsPlusExplorer {
     this.positionContextMenu(button);
   }
 
-  renderGrid() {
-    const grid = this.elements.grid;
-    this.rememberScrollPosition();
-    grid.innerHTML = "";
-    const filtered = this.getFilteredItems();
+  setupThumbObserver() {
+    if (this.thumbObserver) {
+      this.thumbObserver.disconnect();
+    }
+    if (typeof IntersectionObserver === "undefined") {
+      this.thumbObserver = null;
+      return;
+    }
+    const root = this.elements.body || null;
+    this.thumbObserver = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          const media = entry.target;
+          const src = media.dataset.src;
+          if (src) {
+            media.src = src;
+            if (media.tagName === "VIDEO") {
+              media.load?.();
+            }
+          }
+          this.thumbObserver?.unobserve(media);
+        });
+      },
+      {
+        root,
+        rootMargin: "300px 0px",
+        threshold: 0.01,
+      }
+    );
+  }
 
-    if (this.state.loading) {
+  disconnectThumbObserver() {
+    if (!this.thumbObserver) return;
+    this.thumbObserver.disconnect();
+    this.thumbObserver = null;
+  }
+
+  observeMedia(media, src) {
+    if (!media || !src) return;
+    if (!this.thumbObserver) {
+      media.src = src;
+      if (media.tagName === "VIDEO") {
+        media.load?.();
+      }
+      return;
+    }
+    media.dataset.src = src;
+    this.thumbObserver.observe(media);
+  }
+
+  buildCard(item, thumbnailSize) {
+    const card = createElement("div", { className: "assets-plus-card" });
+    card.setAttribute("data-relpath", item.relpath);
+
+    const checkbox = createElement("input", {
+      className: "assets-plus-checkbox",
+      attrs: { type: "checkbox", "aria-label": t("selection.checkbox_label") },
+    });
+    const isSelected = this.state.selected.has(item.relpath);
+    checkbox.checked = isSelected;
+    card.classList.toggle("selected", isSelected);
+
+    const thumb = createElement("div", { className: "assets-plus-thumb" });
+    const thumbUrl = buildThumbUrl(item.relpath, this.state.tab, thumbnailSize);
+    if (item.type === "video") {
+      const video = document.createElement("video");
+      video.muted = true;
+      video.loop = true;
+      video.playsInline = true;
+      video.preload = "none";
+      this.observeMedia(video, thumbUrl);
+      thumb.appendChild(video);
+    } else {
+      const image = document.createElement("img");
+      image.alt = item.filename;
+      image.loading = "lazy";
+      image.decoding = "async";
+      this.observeMedia(image, thumbUrl);
+      thumb.appendChild(image);
+    }
+
+    card.appendChild(checkbox);
+    card.appendChild(thumb);
+    const hasWorkflow = item.has_workflow && item.type === "image";
+    if (hasWorkflow) {
+      const menu = createElement("div", { className: "assets-plus-card-menu" });
+      const menuButton = createElement("button", {
+        className: "assets-plus-card-menu-button",
+        attrs: { title: t("actions.workflow_menu"), "aria-label": t("actions.workflow_menu") },
+      });
+      menuButton.innerHTML = '<i class="pi pi-bars"></i>';
+      menu.appendChild(menuButton);
+      card.appendChild(menu);
+
+      menuButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        this.toggleContextMenu(item, menuButton);
+      });
+    }
+
+    checkbox.addEventListener("change", (event) => {
+      this.setSelected(item.relpath, event.target.checked);
+    });
+
+    card.addEventListener("click", (event) => {
+      if (event.target.closest(".assets-plus-checkbox")) {
+        return;
+      }
+      if (event.target.closest(".assets-plus-card-menu")) {
+        return;
+      }
+      this.closeContextMenu();
+      this.openOverlay(item.relpath);
+    });
+
+    return card;
+  }
+
+  appendItemsToGrid(items) {
+    if (!items.length) return;
+    const { thumbnailSize } = this.getSettingsSnapshot();
+    const fragment = document.createDocumentFragment();
+    items.forEach((item) => {
+      fragment.appendChild(this.buildCard(item, thumbnailSize));
+    });
+    this.elements.grid.appendChild(fragment);
+    this.updateActionsBar();
+    this.restoreContextMenu();
+  }
+
+  renderGrid({ reset = false } = {}) {
+    const grid = this.elements.grid;
+    const filtered = this.getFilteredItems();
+    if (reset) {
+      this.rememberScrollPosition();
+      grid.innerHTML = "";
+      this.setupThumbObserver();
+    }
+
+    if (this.state.loading && !filtered.length) {
       this.setStatus(t("status.loading"));
     } else if (this.state.error) {
       this.setStatus(this.state.error);
     } else if (!filtered.length) {
       this.setStatus(t("status.empty"));
+    } else if (this.state.loadingMore) {
+      this.setStatus(t("status.loading_more"));
     } else {
       this.setStatus("");
     }
 
-    if (!filtered.length) {
+    if (reset) {
+      this.appendItemsToGrid(filtered);
+      this.applySelectionStyles();
       this.updateActionsBar();
       this.restoreContextMenu();
       this.restoreScrollPosition();
-      return;
     }
-
-    const { thumbnailSize } = this.getSettingsSnapshot();
-
-    filtered.forEach((item) => {
-      const card = createElement("div", { className: "assets-plus-card" });
-      card.setAttribute("data-relpath", item.relpath);
-
-      const checkbox = createElement("input", {
-        className: "assets-plus-checkbox",
-        attrs: { type: "checkbox", "aria-label": t("selection.checkbox_label") },
-      });
-      checkbox.checked = this.state.selected.has(item.relpath);
-
-      const thumb = createElement("div", { className: "assets-plus-thumb" });
-      const thumbUrl = buildThumbUrl(item.relpath, this.state.tab, thumbnailSize);
-      if (item.type === "video") {
-        const video = document.createElement("video");
-        video.src = thumbUrl;
-        video.muted = true;
-        video.loop = true;
-        video.playsInline = true;
-        video.preload = "metadata";
-        thumb.appendChild(video);
-      } else {
-        const image = document.createElement("img");
-        image.src = thumbUrl;
-        image.alt = item.filename;
-        thumb.appendChild(image);
-      }
-
-      card.appendChild(checkbox);
-      card.appendChild(thumb);
-      const hasWorkflow = item.has_workflow && item.type === "image";
-      if (hasWorkflow) {
-        const menu = createElement("div", { className: "assets-plus-card-menu" });
-        const menuButton = createElement("button", {
-          className: "assets-plus-card-menu-button",
-          attrs: { title: t("actions.workflow_menu"), "aria-label": t("actions.workflow_menu") },
-        });
-        menuButton.innerHTML = '<i class="pi pi-bars"></i>';
-        menu.appendChild(menuButton);
-        card.appendChild(menu);
-
-        menuButton.addEventListener("click", (event) => {
-          event.stopPropagation();
-          this.toggleContextMenu(item, menuButton);
-        });
-      }
-
-      checkbox.addEventListener("change", (event) => {
-        this.setSelected(item.relpath, event.target.checked);
-      });
-
-      card.addEventListener("click", (event) => {
-        if (event.target.closest(".assets-plus-checkbox")) {
-          return;
-        }
-        if (event.target.closest(".assets-plus-card-menu")) {
-          return;
-        }
-        this.closeContextMenu();
-        this.openOverlay(item.relpath);
-      });
-
-      grid.appendChild(card);
-    });
-
-    this.applySelectionStyles();
-    this.updateActionsBar();
-    this.restoreContextMenu();
-    this.restoreScrollPosition();
   }
 
   async loadConfig() {
@@ -1856,64 +2011,123 @@ class AssetsPlusExplorer {
     }
   }
 
+  buildListParams({ cursor = "", since = null } = {}) {
+    const settings = this.getSettingsSnapshot();
+    const params = new URLSearchParams();
+    params.set("limit", String(settings.listLimit));
+    if (settings.extensions?.length) params.set("extensions", settings.extensions.join(","));
+    if (settings.scanDepth !== null && settings.scanDepth !== undefined) {
+      params.set("scan_depth", String(settings.scanDepth));
+    } else if (settings.recursive === false) {
+      params.set("recursive", "0");
+    }
+    const query = this.state.search.trim();
+    if (query) {
+      params.set("query", query);
+    }
+    if (cursor) {
+      params.set("cursor", cursor);
+    }
+    if (since !== null && since !== undefined) {
+      params.set("since", String(since));
+    }
+    return params;
+  }
+
+  updateLatestMtime(value) {
+    if (!Number.isFinite(value)) return;
+    this.state.latestMtime = Math.max(this.state.latestMtime || 0, value);
+  }
+
+  mergeNewItems(items) {
+    if (!items.length) return;
+    const map = new Map(this.state.items.map((item) => [item.relpath, item]));
+    items.forEach((item) => map.set(item.relpath, item));
+    const merged = Array.from(map.values());
+    merged.sort((a, b) => (b.mtime - a.mtime) || a.relpath.localeCompare(b.relpath));
+    this.state.items = merged;
+    const available = new Set(merged.map((item) => item.relpath));
+    this.state.selected = new Set(
+      Array.from(this.state.selected).filter((relpath) => available.has(relpath))
+    );
+    this.renderGrid({ reset: true });
+  }
+
+  async loadPage({ reset = false } = {}) {
+    const params = this.buildListParams({ cursor: reset ? "" : this.state.cursor });
+    const payload = await fetchJson(`/assets_plus/${this.state.tab}/list?${params.toString()}`);
+    const items = payload.items || [];
+    if (reset) {
+      this.state.items = items;
+    } else {
+      this.state.items = this.state.items.concat(items);
+    }
+    this.state.cursor = payload.cursor || this.state.cursor;
+    this.state.hasMore = Boolean(payload.has_more);
+    this.updateLatestMtime(payload.latest_mtime);
+    if (reset) {
+      this.renderGrid({ reset: true });
+    } else {
+      this.appendItemsToGrid(items);
+      if (!items.length && !this.state.items.length) {
+        this.renderGrid({ reset: true });
+      } else if (this.state.loadingMore) {
+        this.setStatus(t("status.loading_more"));
+      } else {
+        this.setStatus("");
+      }
+    }
+  }
+
   async refreshList() {
     this.state.loading = true;
+    this.state.loadingMore = false;
     this.state.error = null;
+    this.state.cursor = "";
+    this.state.hasMore = true;
+    this.state.latestMtime = 0;
+    this.state.items = [];
+    this.state.pendingRefresh[this.state.tab] = false;
+    this.clearSelection();
+    this.renderGrid({ reset: true });
+    try {
+      await this.loadPage({ reset: true });
+    } catch (error) {
+      this.state.error = t("status.load_error");
+      this.renderGrid({ reset: true });
+    } finally {
+      this.state.loading = false;
+      this.renderGrid({ reset: true });
+    }
+  }
+
+  async loadNextPage() {
+    if (!this.state.hasMore || this.state.loadingMore || this.state.loading) return;
+    this.state.loadingMore = true;
     this.renderGrid();
     try {
-      const settings = this.getSettingsSnapshot();
-      const params = new URLSearchParams();
-      params.set("limit", String(settings.listLimit));
-      if (settings.extensions?.length) params.set("extensions", settings.extensions.join(","));
-      if (settings.scanDepth !== null && settings.scanDepth !== undefined) {
-        params.set("scan_depth", String(settings.scanDepth));
-      } else if (settings.recursive === false) {
-        params.set("recursive", "0");
-      }
-      const payload = await fetchJson(`/assets_plus/${this.state.tab}/list?${params.toString()}`);
-      this.state.items = payload.items || [];
-      this.clearSelection();
+      await this.loadPage();
     } catch (error) {
       this.state.error = t("status.load_error");
     } finally {
-      this.state.loading = false;
+      this.state.loadingMore = false;
       this.renderGrid();
     }
   }
 
-  async pollForUpdates() {
-    if (this.state.tab !== OUTPUT_TAB) return;
-    if (!this.elements.root?.offsetParent) return;
+  async refreshNewItems() {
+    if (this.state.loading) return;
+    const since = this.state.latestMtime || null;
+    const params = this.buildListParams({ since });
     try {
-      const settings = this.getSettingsSnapshot();
-      const params = new URLSearchParams();
-      params.set("limit", String(settings.listLimit));
-      if (settings.extensions?.length) params.set("extensions", settings.extensions.join(","));
-      if (settings.scanDepth !== null && settings.scanDepth !== undefined) {
-        params.set("scan_depth", String(settings.scanDepth));
-      } else if (settings.recursive === false) {
-        params.set("recursive", "0");
-      }
       const payload = await fetchJson(`/assets_plus/${this.state.tab}/list?${params.toString()}`);
-      this.state.items = payload.items || [];
-      this.renderGrid();
+      const items = payload.items || [];
+      if (items.length) {
+        this.mergeNewItems(items);
+      }
+      this.updateLatestMtime(payload.latest_mtime);
     } catch (error) {
-      warn(t("log.poll_failed"), error);
-    }
-  }
-
-  startPolling() {
-    this.stopPolling();
-    if (this.state.tab !== OUTPUT_TAB) return;
-    const { pollSeconds } = this.getSettingsSnapshot();
-    if (!Number.isFinite(pollSeconds) || pollSeconds <= 0) return;
-    this.state.pollId = window.setInterval(() => this.pollForUpdates(), pollSeconds * 1000);
-  }
-
-  stopPolling() {
-    if (this.state.pollId) {
-      window.clearInterval(this.state.pollId);
-      this.state.pollId = null;
+      warn(t("log.refresh_failed"), error);
     }
   }
 
@@ -1991,13 +2205,17 @@ class AssetsPlusExplorer {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ relpaths: deleteRelpaths, mode }),
       });
+      const deleteSet = new Set(deleteRelpaths);
+      this.state.items = this.state.items.filter((item) => !deleteSet.has(item.relpath));
+      deleteRelpaths.forEach((relpath) => this.state.selected.delete(relpath));
+      this.state.latestMtime = this.state.items[0]?.mtime ?? 0;
       if (overlayRelpath && deleteRelpaths.includes(overlayRelpath)) {
         this.state.overlay.relpath = nextOverlayRelpath;
         if (!nextOverlayRelpath) {
           this.closeOverlay();
         }
       }
-      await this.refreshList();
+      this.renderGrid({ reset: true });
       if (
         nextOverlayRelpath &&
         this.state.items.some((item) => item.relpath === nextOverlayRelpath)
