@@ -33,19 +33,23 @@ const OVERLAY_COMMANDS = {
 const OVERLAY_KEYBINDINGS = [
   {
     commandId: OVERLAY_COMMANDS.prev,
-    combo: { key: "a" },
+    combo: { key: "ArrowLeft" },
   },
   {
     commandId: OVERLAY_COMMANDS.next,
-    combo: { key: "d" },
+    combo: { key: "ArrowRight" },
   },
   {
     commandId: OVERLAY_COMMANDS.last,
-    combo: { key: "s" },
+    combo: { key: "ArrowDown" },
   },
   {
     commandId: OVERLAY_COMMANDS.delete,
     combo: { key: "x" },
+  },
+  {
+    commandId: "Workspace.ToggleSidebarTab.assets-plus-explorer",
+    combo: { key: "ArrowUp" },
   },
 ];
 
