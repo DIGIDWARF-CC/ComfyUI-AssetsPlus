@@ -1,6 +1,6 @@
 # Patches in this fork
 
-This branch (`feat/arrow-keybindings`) carries downstream patches on top of
+This branch (`feat/improvements`) carries downstream patches on top of
 [`DIGIDWARF-CC/ComfyUI-AssetsPlus`](https://github.com/DIGIDWARF-CC/ComfyUI-AssetsPlus).
 
 The list below describes each change and why it was made. Anything in
@@ -138,7 +138,7 @@ cd /opt/ComfyUI/custom_nodes        # or wherever your ComfyUI lives
 git clone https://github.com/svilendotorg/ComfyUI-AssetsPlus
 ```
 
-Default branch on this fork is `feat/arrow-keybindings`, so the clone lands
+Default branch on this fork is `feat/improvements`, so the clone lands
 on the patched code automatically. Restart ComfyUI.
 
 To track upstream:
