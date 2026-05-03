@@ -12,12 +12,14 @@ import folder_paths
 @dataclass(frozen=True)
 class AssetsPlusConfig:
     allowed_extensions: tuple[str, ...] = (
-        ".png",
-        ".jpg",
-        ".jpeg",
-        ".webp",
-        ".mp4",
-        ".webm",
+        # images
+        ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff",
+        # video
+        ".mp4", ".webm", ".mov", ".mkv",
+        # audio
+        ".mp3", ".flac", ".wav", ".ogg", ".m4a",
+        # 3D / mesh
+        ".glb", ".gltf", ".obj",
     )
     thumbnail_quality: str = "low"
     list_limit: int = 200
