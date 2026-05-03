@@ -2488,7 +2488,7 @@ class AssetsPlusExplorer {
     ) {
       return;
     }
-    if (target.closest(".assets-plus-overlay-image") || target.closest(".assets-plus-overlay-video")) {
+    if (target.closest(".assets-plus-overlay-image") || target.closest(".assets-plus-overlay-video") || target.closest(".assets-plus-overlay-mesh") || target.closest(".assets-plus-overlay-audio") || target.closest(".assets-plus-overlay-download") || target.tagName === "MODEL-VIEWER") {
       return;
     }
     this.closeOverlay();
