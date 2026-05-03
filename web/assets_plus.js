@@ -2395,9 +2395,46 @@ class AssetsPlusExplorer {
       overlayImage.style.display = "none";
       overlayVideo.style.display = "block";
       overlayVideo.src = viewUrl;
+    } else if (item.type === "audio") {
+      overlayImage.style.display = "none";
+      overlayVideo.style.display = "none";
+      // Reuse overlayImage's parent for an audio control
+      let audio = overlayMedia.querySelector(".assets-plus-overlay-audio");
+      if (!audio) {
+        audio = document.createElement("audio");
+        audio.className = "assets-plus-overlay-audio";
+        audio.controls = true;
+        audio.style.maxWidth = "90%";
+        audio.style.margin = "auto";
+        overlayMedia.appendChild(audio);
+      }
+      audio.src = viewUrl;
+      audio.style.display = "block";
+    } else if (item.type === "mesh" || item.type === "other") {
+      overlayImage.style.display = "none";
+      overlayVideo.style.display = "none";
+      let link = overlayMedia.querySelector(".assets-plus-overlay-download");
+      if (!link) {
+        link = document.createElement("a");
+        link.className = "assets-plus-overlay-download";
+        link.target = "_blank";
+        link.rel = "noopener";
+        link.style.color = "#cdd";
+        link.style.fontSize = "1.1em";
+        link.style.textDecoration = "underline";
+        link.style.padding = "1em";
+        overlayMedia.appendChild(link);
+      }
+      link.href = viewUrl;
+      link.textContent = `Open ${item.filename} ↗`;
+      link.style.display = "inline-block";
     } else {
       overlayVideo.style.display = "none";
       overlayVideo.pause?.();
+      const _audioEl = overlayMedia.querySelector(".assets-plus-overlay-audio");
+      if (_audioEl) { _audioEl.pause?.(); _audioEl.style.display = "none"; }
+      const _dlEl = overlayMedia.querySelector(".assets-plus-overlay-download");
+      if (_dlEl) { _dlEl.style.display = "none"; }
       overlayVideo.removeAttribute("src");
       overlayVideo.load?.();
       overlayImage.style.display = "block";
