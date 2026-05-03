@@ -2391,15 +2391,25 @@ class AssetsPlusExplorer {
     overlayInfo.textContent = `${item.filename} • ${extension} • ${dateLabel}`;
 
     const viewUrl = buildViewUrl(item.relpath, this.state.tab);
+
+    // Hide every media element first; the branch below shows just the one it needs.
+    overlayImage.style.display = "none";
+    overlayVideo.style.display = "none";
+    overlayVideo.pause?.();
+    overlayVideo.removeAttribute("src");
+    overlayVideo.load?.();
+    const _audioEl = overlayMedia.querySelector(".assets-plus-overlay-audio");
+    if (_audioEl) { _audioEl.pause?.(); _audioEl.removeAttribute("src"); _audioEl.style.display = "none"; }
+    const _meshEl = overlayMedia.querySelector(".assets-plus-overlay-mesh");
+    if (_meshEl) { _meshEl.removeAttribute("src"); _meshEl.style.display = "none"; }
+    const _dlEl = overlayMedia.querySelector(".assets-plus-overlay-download");
+    if (_dlEl) { _dlEl.style.display = "none"; }
+
     if (item.type === "video") {
-      overlayImage.style.display = "none";
       overlayVideo.style.display = "block";
       overlayVideo.src = viewUrl;
     } else if (item.type === "audio") {
-      overlayImage.style.display = "none";
-      overlayVideo.style.display = "none";
-      // Reuse overlayImage's parent for an audio control
-      let audio = overlayMedia.querySelector(".assets-plus-overlay-audio");
+      let audio = _audioEl;
       if (!audio) {
         audio = document.createElement("audio");
         audio.className = "assets-plus-overlay-audio";
@@ -2411,8 +2421,6 @@ class AssetsPlusExplorer {
       audio.src = viewUrl;
       audio.style.display = "block";
     } else if (item.type === "mesh") {
-      overlayImage.style.display = "none";
-      overlayVideo.style.display = "none";
       // Lazily load <model-viewer> if it's not already a registered custom element.
       if (!customElements.get("model-viewer")) {
         if (!document.querySelector('script[data-model-viewer-loader]')) {
@@ -2423,7 +2431,7 @@ class AssetsPlusExplorer {
           document.head.appendChild(mvScript);
         }
       }
-      let viewer = overlayMedia.querySelector(".assets-plus-overlay-mesh");
+      let viewer = _meshEl;
       if (!viewer) {
         viewer = document.createElement("model-viewer");
         viewer.className = "assets-plus-overlay-mesh";
@@ -2436,14 +2444,10 @@ class AssetsPlusExplorer {
         viewer.style.background = "#1a1a20";
         overlayMedia.appendChild(viewer);
       }
-      if (viewer.getAttribute("src") !== viewUrl) {
-        viewer.setAttribute("src", viewUrl);
-      }
+      viewer.setAttribute("src", viewUrl);
       viewer.style.display = "block";
     } else if (item.type === "other") {
-      overlayImage.style.display = "none";
-      overlayVideo.style.display = "none";
-      let link = overlayMedia.querySelector(".assets-plus-overlay-download");
+      let link = _dlEl;
       if (!link) {
         link = document.createElement("a");
         link.className = "assets-plus-overlay-download";
@@ -2459,16 +2463,6 @@ class AssetsPlusExplorer {
       link.textContent = `Open ${item.filename} ↗`;
       link.style.display = "inline-block";
     } else {
-      overlayVideo.style.display = "none";
-      overlayVideo.pause?.();
-      const _audioEl = overlayMedia.querySelector(".assets-plus-overlay-audio");
-      if (_audioEl) { _audioEl.pause?.(); _audioEl.style.display = "none"; }
-      const _dlEl = overlayMedia.querySelector(".assets-plus-overlay-download");
-      if (_dlEl) { _dlEl.style.display = "none"; }
-      const _meshEl = overlayMedia.querySelector(".assets-plus-overlay-mesh");
-      if (_meshEl) { _meshEl.style.display = "none"; }
-      overlayVideo.removeAttribute("src");
-      overlayVideo.load?.();
       overlayImage.style.display = "block";
       overlayImage.src = viewUrl;
     }
