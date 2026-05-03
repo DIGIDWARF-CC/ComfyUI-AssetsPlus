@@ -2380,7 +2380,7 @@ class AssetsPlusExplorer {
       this.closeOverlay();
       return;
     }
-    const { overlayInfo, overlayPrev, overlayNext, overlayImage, overlayVideo } = this.elements;
+    const { overlayInfo, overlayPrev, overlayNext, overlayImage, overlayVideo, overlayMedia } = this.elements;
     const items = this.getFilteredItems();
     const index = items.findIndex((entry) => entry.relpath === item.relpath);
     overlayPrev.disabled = index <= 0;
