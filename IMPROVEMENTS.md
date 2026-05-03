@@ -1,4 +1,4 @@
-# Patches in this fork
+# Improvements in this fork
 
 This branch (`feat/improvements`) carries downstream patches on top of
 [`DIGIDWARF-CC/ComfyUI-AssetsPlus`](https://github.com/DIGIDWARF-CC/ComfyUI-AssetsPlus).

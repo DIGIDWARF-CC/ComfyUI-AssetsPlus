@@ -1,6 +1,6 @@
 > **🍴 Fork notice** — this is a downstream fork of [DIGIDWARF-CC/ComfyUI-AssetsPlus](https://github.com/DIGIDWARF-CC/ComfyUI-AssetsPlus).
 > Default branch [`feat/improvements`](https://github.com/svilendotorg/ComfyUI-AssetsPlus/tree/feat/improvements) carries arrow-key navigation, audio + 3D mesh asset support (inline `<model-viewer>` preview, `<audio controls>` overlay), expanded extension whitelist, and a few overlay close-handler fixes.
-> See [**PATCHES.md**](PATCHES.md) for the full list of downstream changes and rationale.
+> See [**IMPROVEMENTS.md**](IMPROVEMENTS.md) for the full list of downstream changes and rationale.
 
 ---
 
