@@ -2410,7 +2410,37 @@ class AssetsPlusExplorer {
       }
       audio.src = viewUrl;
       audio.style.display = "block";
-    } else if (item.type === "mesh" || item.type === "other") {
+    } else if (item.type === "mesh") {
+      overlayImage.style.display = "none";
+      overlayVideo.style.display = "none";
+      // Lazily load <model-viewer> if it's not already a registered custom element.
+      if (!customElements.get("model-viewer")) {
+        if (!document.querySelector('script[data-model-viewer-loader]')) {
+          const mvScript = document.createElement("script");
+          mvScript.type = "module";
+          mvScript.src = "https://ajax.googleapis.com/ajax/libs/model-viewer/4.0.0/model-viewer.min.js";
+          mvScript.dataset.modelViewerLoader = "true";
+          document.head.appendChild(mvScript);
+        }
+      }
+      let viewer = overlayMedia.querySelector(".assets-plus-overlay-mesh");
+      if (!viewer) {
+        viewer = document.createElement("model-viewer");
+        viewer.className = "assets-plus-overlay-mesh";
+        viewer.setAttribute("camera-controls", "");
+        viewer.setAttribute("auto-rotate", "");
+        viewer.setAttribute("shadow-intensity", "1");
+        viewer.setAttribute("environment-image", "neutral");
+        viewer.style.width = "min(90vw, 90vh)";
+        viewer.style.height = "min(90vw, 90vh)";
+        viewer.style.background = "#1a1a20";
+        overlayMedia.appendChild(viewer);
+      }
+      if (viewer.getAttribute("src") !== viewUrl) {
+        viewer.setAttribute("src", viewUrl);
+      }
+      viewer.style.display = "block";
+    } else if (item.type === "other") {
       overlayImage.style.display = "none";
       overlayVideo.style.display = "none";
       let link = overlayMedia.querySelector(".assets-plus-overlay-download");
@@ -2435,6 +2465,8 @@ class AssetsPlusExplorer {
       if (_audioEl) { _audioEl.pause?.(); _audioEl.style.display = "none"; }
       const _dlEl = overlayMedia.querySelector(".assets-plus-overlay-download");
       if (_dlEl) { _dlEl.style.display = "none"; }
+      const _meshEl = overlayMedia.querySelector(".assets-plus-overlay-mesh");
+      if (_meshEl) { _meshEl.style.display = "none"; }
       overlayVideo.removeAttribute("src");
       overlayVideo.load?.();
       overlayImage.style.display = "block";
