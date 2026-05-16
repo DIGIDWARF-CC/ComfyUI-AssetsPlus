@@ -1,9 +1,3 @@
-> **🍴 Fork notice** — this is a downstream fork of [DIGIDWARF-CC/ComfyUI-AssetsPlus](https://github.com/DIGIDWARF-CC/ComfyUI-AssetsPlus).
-> Default branch [`feat/improvements`](https://github.com/svilendotorg/ComfyUI-AssetsPlus/tree/feat/improvements) carries arrow-key navigation, audio + 3D mesh asset support (inline `<model-viewer>` preview, `<audio controls>` overlay), expanded extension whitelist, and a few overlay close-handler fixes.
-> See [**IMPROVEMENTS.md**](IMPROVEMENTS.md) for the full list of downstream changes and rationale.
-
----
-
 # ComfyUI-AssetsPlus <img alt="Static Badge" src="https://img.shields.io/badge/OpenAI-Codex-gray?style=plastic&label=OpenAI&labelColor=0fa37f&color=gray">
 <p align="center">
   <img src="/meta/img/logo_1024x700.png" alt="ai-generated assets-plus logo" width="600"/>
