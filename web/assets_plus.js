@@ -2351,10 +2351,16 @@ class AssetsPlusExplorer {
     this.state.overlay.relpath = null;
     this.resetOverlayZoom();
     this.stopOverlayPan();
-    const { overlayVideo } = this.elements;
+    const { overlayVideo, overlayMedia } = this.elements;
     overlayVideo.pause?.();
     overlayVideo.removeAttribute("src");
     overlayVideo.load?.();
+    const audioEl = overlayMedia?.querySelector(".assets-plus-overlay-audio");
+    if (audioEl) {
+      audioEl.pause?.();
+      audioEl.removeAttribute("src");
+      audioEl.load?.();
+    }
   }
 
   navigateOverlay(direction) {
