@@ -2427,12 +2427,12 @@ class AssetsPlusExplorer {
       audio.src = viewUrl;
       audio.style.display = "block";
     } else if (item.type === "mesh") {
-      // Lazily load <model-viewer> if it's not already a registered custom element.
+      // Lazily load the locally-bundled <model-viewer> (works offline / in air-gapped installs).
       if (!customElements.get("model-viewer")) {
         if (!document.querySelector('script[data-model-viewer-loader]')) {
           const mvScript = document.createElement("script");
           mvScript.type = "module";
-          mvScript.src = "https://ajax.googleapis.com/ajax/libs/model-viewer/4.0.0/model-viewer.min.js";
+          mvScript.src = new URL("./vendor/model-viewer.min.js", import.meta.url).href;
           mvScript.dataset.modelViewerLoader = "true";
           document.head.appendChild(mvScript);
         }
