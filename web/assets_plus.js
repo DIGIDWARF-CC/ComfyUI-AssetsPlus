@@ -6,7 +6,13 @@ const SIDEBAR_TAB_ID = "assets-plus-explorer";
 const OUTPUT_TAB = "output";
 const INPUT_TAB = "input";
 
-const DEFAULT_EXTENSIONS = ["png", "jpg", "jpeg", "webp", "mp4", "webm"];
+const DEFAULT_EXTENSIONS = [
+  "png", "jpg", "jpeg", "webp", "gif", "bmp", "tiff",
+  "mp4", "webm", "mov", "mkv",
+  "mp3", "flac", "wav", "ogg", "m4a",
+  "glb", "gltf",
+];
+const VIDEO_THUMB_EXTENSIONS = new Set(["mp4", "webm"]);
 const DEFAULT_LIST_LIMIT = 200;
 const DEFAULT_THUMB_QUALITY = "low";
 const THUMB_QUALITY_SIZES = {
@@ -485,6 +491,8 @@ const buildThumbUrl = (relpath, directory, size) => {
   });
   return `/assets_plus/${directory}/thumb?${params.toString()}`;
 };
+
+const getFileExtension = (filename) => filename.split(".").pop()?.toLowerCase() || "";
 
 const normalizeWorkflow = (workflow) => {
   if (!workflow) return null;
@@ -1911,7 +1919,8 @@ class AssetsPlusExplorer {
 
     const thumb = createElement("div", { className: "assets-plus-thumb" });
     const thumbUrl = buildThumbUrl(item.relpath, this.state.tab, thumbnailSize);
-    if (item.type === "video") {
+    const extension = getFileExtension(item.filename);
+    if (item.type === "video" && VIDEO_THUMB_EXTENSIONS.has(extension)) {
       const video = document.createElement("video");
       video.muted = true;
       video.loop = true;

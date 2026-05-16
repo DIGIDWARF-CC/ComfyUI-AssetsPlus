@@ -54,7 +54,12 @@ UI settings (ComfyUI Settings → Assets+ Explorer):
 Example:
 ```json
 {
-  "allowed_extensions": [".png", ".jpg", ".jpeg", ".webp", ".mp4", ".webm"],
+  "allowed_extensions": [
+    ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff",
+    ".mp4", ".webm", ".mov", ".mkv",
+    ".mp3", ".flac", ".wav", ".ogg", ".m4a",
+    ".glb", ".gltf"
+  ],
   "thumbnail_quality": "low",
   "list_limit": 200,
   "recursive": true,
@@ -76,6 +81,7 @@ Example:
 * Server-side search optimized for large galleries.
 * Lazy loading of thumbnails and paged scrolling for large galleries.
 * Event-driven updates when ComfyUI emits execution or upload events (no polling).
+* Expanded media support from @svilendotorg: additional image/video formats, audio playback in the overlay, GLB/GLTF mesh previews, and arrow-key overlay navigation.
 
 ## Deletion modes
 
@@ -97,7 +103,7 @@ If there’s no metadata, the menu is hidden.
 ## Limitations
 
 * Asset sources are ComfyUI’s output/input directories only (no arbitrary paths).
-* Videos (`.mp4/.webm`) are served as-is; no thumbnails are generated.
+* Videos are served as-is. `.mp4`/`.webm` can be previewed directly in tiles; `.mov`/`.mkv` use a placeholder tile and rely on browser playback support in the overlay.
 * Search is executed by the backend (depends on `/assets_plus/*/list?query=`).
 * Delete confirmations can be disabled in Settings (Assets+ confirm deletions).
 
@@ -118,4 +124,4 @@ The extension structure matches Manager requirements:
 
 ## Third-party assets
 
-* `web/vendor/model-viewer.min.js` — [`@google/model-viewer`](https://github.com/google/model-viewer) v4.0.0, © Google LLC, BSD-3-Clause. Bundled locally so 3D mesh previews work in air-gapped / network-restricted ComfyUI installs.
+* `web/vendor/model-viewer.min.js` — [`@google/model-viewer`](https://github.com/google/model-viewer) v4.0.0 and its bundled upstream dependencies. License headers are preserved in the vendored file.
