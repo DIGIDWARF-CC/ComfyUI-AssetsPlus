@@ -33,19 +33,23 @@ const OVERLAY_COMMANDS = {
 const OVERLAY_KEYBINDINGS = [
   {
     commandId: OVERLAY_COMMANDS.prev,
-    combo: { key: "a" },
+    combo: { key: "ArrowLeft" },
   },
   {
     commandId: OVERLAY_COMMANDS.next,
-    combo: { key: "d" },
+    combo: { key: "ArrowRight" },
   },
   {
     commandId: OVERLAY_COMMANDS.last,
-    combo: { key: "s" },
+    combo: { key: "ArrowDown" },
   },
   {
     commandId: OVERLAY_COMMANDS.delete,
     combo: { key: "x" },
+  },
+  {
+    commandId: "Workspace.ToggleSidebarTab.assets-plus-explorer",
+    combo: { key: "ArrowUp" },
   },
 ];
 
@@ -2347,10 +2351,16 @@ class AssetsPlusExplorer {
     this.state.overlay.relpath = null;
     this.resetOverlayZoom();
     this.stopOverlayPan();
-    const { overlayVideo } = this.elements;
+    const { overlayVideo, overlayMedia } = this.elements;
     overlayVideo.pause?.();
     overlayVideo.removeAttribute("src");
     overlayVideo.load?.();
+    const audioEl = overlayMedia?.querySelector(".assets-plus-overlay-audio");
+    if (audioEl) {
+      audioEl.pause?.();
+      audioEl.removeAttribute("src");
+      audioEl.load?.();
+    }
   }
 
   navigateOverlay(direction) {
@@ -2376,7 +2386,7 @@ class AssetsPlusExplorer {
       this.closeOverlay();
       return;
     }
-    const { overlayInfo, overlayPrev, overlayNext, overlayImage, overlayVideo } = this.elements;
+    const { overlayInfo, overlayPrev, overlayNext, overlayImage, overlayVideo, overlayMedia } = this.elements;
     const items = this.getFilteredItems();
     const index = items.findIndex((entry) => entry.relpath === item.relpath);
     overlayPrev.disabled = index <= 0;
@@ -2387,15 +2397,78 @@ class AssetsPlusExplorer {
     overlayInfo.textContent = `${item.filename} • ${extension} • ${dateLabel}`;
 
     const viewUrl = buildViewUrl(item.relpath, this.state.tab);
+
+    // Hide every media element first; the branch below shows just the one it needs.
+    overlayImage.style.display = "none";
+    overlayVideo.style.display = "none";
+    overlayVideo.pause?.();
+    overlayVideo.removeAttribute("src");
+    overlayVideo.load?.();
+    const _audioEl = overlayMedia.querySelector(".assets-plus-overlay-audio");
+    if (_audioEl) { _audioEl.pause?.(); _audioEl.removeAttribute("src"); _audioEl.style.display = "none"; }
+    const _meshEl = overlayMedia.querySelector(".assets-plus-overlay-mesh");
+    if (_meshEl) { _meshEl.removeAttribute("src"); _meshEl.style.display = "none"; }
+    const _dlEl = overlayMedia.querySelector(".assets-plus-overlay-download");
+    if (_dlEl) { _dlEl.style.display = "none"; }
+
     if (item.type === "video") {
-      overlayImage.style.display = "none";
       overlayVideo.style.display = "block";
       overlayVideo.src = viewUrl;
+    } else if (item.type === "audio") {
+      let audio = _audioEl;
+      if (!audio) {
+        audio = document.createElement("audio");
+        audio.className = "assets-plus-overlay-audio";
+        audio.controls = true;
+        audio.style.maxWidth = "90%";
+        audio.style.margin = "auto";
+        overlayMedia.appendChild(audio);
+      }
+      audio.src = viewUrl;
+      audio.style.display = "block";
+    } else if (item.type === "mesh") {
+      // Lazily load the locally-bundled <model-viewer> (works offline / in air-gapped installs).
+      if (!customElements.get("model-viewer")) {
+        if (!document.querySelector('script[data-model-viewer-loader]')) {
+          const mvScript = document.createElement("script");
+          mvScript.type = "module";
+          mvScript.src = new URL("./vendor/model-viewer.min.js", import.meta.url).href;
+          mvScript.dataset.modelViewerLoader = "true";
+          document.head.appendChild(mvScript);
+        }
+      }
+      let viewer = _meshEl;
+      if (!viewer) {
+        viewer = document.createElement("model-viewer");
+        viewer.className = "assets-plus-overlay-mesh";
+        viewer.setAttribute("camera-controls", "");
+        viewer.setAttribute("auto-rotate", "");
+        viewer.setAttribute("shadow-intensity", "1");
+        viewer.setAttribute("environment-image", "neutral");
+        viewer.style.width = "min(90vw, 90vh)";
+        viewer.style.height = "min(90vw, 90vh)";
+        viewer.style.background = "#1a1a20";
+        overlayMedia.appendChild(viewer);
+      }
+      viewer.setAttribute("src", viewUrl);
+      viewer.style.display = "block";
+    } else if (item.type === "other") {
+      let link = _dlEl;
+      if (!link) {
+        link = document.createElement("a");
+        link.className = "assets-plus-overlay-download";
+        link.target = "_blank";
+        link.rel = "noopener";
+        link.style.color = "#cdd";
+        link.style.fontSize = "1.1em";
+        link.style.textDecoration = "underline";
+        link.style.padding = "1em";
+        overlayMedia.appendChild(link);
+      }
+      link.href = viewUrl;
+      link.textContent = `Open ${item.filename} ↗`;
+      link.style.display = "inline-block";
     } else {
-      overlayVideo.style.display = "none";
-      overlayVideo.pause?.();
-      overlayVideo.removeAttribute("src");
-      overlayVideo.load?.();
       overlayImage.style.display = "block";
       overlayImage.src = viewUrl;
     }
@@ -2415,7 +2488,7 @@ class AssetsPlusExplorer {
     ) {
       return;
     }
-    if (target.closest(".assets-plus-overlay-image") || target.closest(".assets-plus-overlay-video")) {
+    if (target.closest(".assets-plus-overlay-image") || target.closest(".assets-plus-overlay-video") || target.closest(".assets-plus-overlay-mesh") || target.closest(".assets-plus-overlay-audio") || target.closest(".assets-plus-overlay-download") || target.tagName === "MODEL-VIEWER") {
       return;
     }
     this.closeOverlay();

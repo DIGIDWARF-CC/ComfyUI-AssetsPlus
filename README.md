@@ -115,3 +115,7 @@ The extension structure matches Manager requirements:
 * Hidden assets are stored in `user/__assets_plus/hidden.json` (input entries are namespaced).
 * Thumbnail cache: `user/__assets_plus/thumb_cache/`.
 * The thumbnail cache can be cleared from settings or via `POST /assets_plus/thumb/clear`.
+
+## Third-party assets
+
+* `web/vendor/model-viewer.min.js` — [`@google/model-viewer`](https://github.com/google/model-viewer) v4.0.0, © Google LLC, BSD-3-Clause. Bundled locally so 3D mesh previews work in air-gapped / network-restricted ComfyUI installs.

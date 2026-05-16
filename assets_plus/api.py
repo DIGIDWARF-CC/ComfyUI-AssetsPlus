@@ -125,7 +125,7 @@ def list_directory_items(
         hidden_entry = hidden.get(hidden_key)
         if hidden_entry and hidden_entry.mtime == int(stat.st_mtime) and hidden_entry.size == stat.st_size:
             continue
-        file_type = "video" if path.suffix.lower() in {".mp4", ".webm"} else "image"
+        file_type = _classify_kind(path)
         items.append(
             {
                 "relpath": relpath,
@@ -138,6 +138,42 @@ def list_directory_items(
         )
     items.sort(key=lambda item: (-item["mtime"], item["relpath"]))
     return items
+
+
+
+
+_KIND_BY_EXT = {
+    ".png": "image", ".jpg": "image", ".jpeg": "image", ".webp": "image",
+    ".gif": "image", ".bmp": "image", ".tiff": "image",
+    ".mp4": "video", ".webm": "video", ".mov": "video", ".mkv": "video",
+    ".mp3": "audio", ".flac": "audio", ".wav": "audio", ".ogg": "audio", ".m4a": "audio",
+    ".glb": "mesh", ".gltf": "mesh",
+}
+
+
+def _classify_kind(path: Path) -> str:
+    return _KIND_BY_EXT.get(path.suffix.lower(), "other")
+
+
+def _placeholder_png(label: str, width: int, height: int) -> Path:
+    """Render (and cache) a tiny labeled placeholder image. Idempotent."""
+    cache = thumb_cache_dir() / f"_placeholder_{label}_{width}x{height}.png"
+    if cache.exists():
+        return cache
+    try:
+        img = Image.new("RGB", (width, height), (40, 40, 48))
+        try:
+            from PIL import ImageDraw
+            draw = ImageDraw.Draw(img)
+            text = label.upper()
+            tw, th = draw.textbbox((0, 0), text)[2:]
+            draw.text(((width - tw) / 2, (height - th) / 2), text, fill=(220, 220, 230))
+        except Exception:
+            pass
+        img.save(cache, format="PNG")
+    except Exception:
+        cache.write_bytes(b"")
+    return cache
 
 
 def has_workflow_metadata(path: Path) -> bool:
@@ -414,6 +450,10 @@ async def output_thumb(request: web.Request) -> web.StreamResponse:
     if path.suffix.lower() in {".mp4", ".webm"}:
         return web.FileResponse(path=path)
 
+    kind = _classify_kind(path)
+    if kind not in ("image",):
+        return web.FileResponse(path=_placeholder_png(kind, width, height))
+
     stat = path.stat()
     cache_key = build_thumb_cache_key(relpath, int(stat.st_mtime), stat.st_size, width, height)
     cache_path = thumb_cache_dir() / f"{cache_key}.png"
@@ -426,7 +466,7 @@ async def output_thumb(request: web.Request) -> web.StreamResponse:
             image.thumbnail((width, height))
             image.save(cache_path, format="PNG")
     except OSError:
-        raise web.HTTPUnsupportedMediaType(text="Unsupported image")
+        return web.FileResponse(path=_placeholder_png("other", width, height))
 
     return web.FileResponse(path=cache_path)
 
@@ -448,6 +488,10 @@ async def input_thumb(request: web.Request) -> web.StreamResponse:
     if path.suffix.lower() in {".mp4", ".webm"}:
         return web.FileResponse(path=path)
 
+    kind = _classify_kind(path)
+    if kind not in ("image",):
+        return web.FileResponse(path=_placeholder_png(kind, width, height))
+
     stat = path.stat()
     cache_key = build_thumb_cache_key(relpath, int(stat.st_mtime), stat.st_size, width, height)
     cache_path = thumb_cache_dir() / f"{cache_key}.png"
@@ -460,7 +504,7 @@ async def input_thumb(request: web.Request) -> web.StreamResponse:
             image.thumbnail((width, height))
             image.save(cache_path, format="PNG")
     except OSError:
-        raise web.HTTPUnsupportedMediaType(text="Unsupported image")
+        return web.FileResponse(path=_placeholder_png("other", width, height))
 
     return web.FileResponse(path=cache_path)
 
