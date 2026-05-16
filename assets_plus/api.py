@@ -147,7 +147,7 @@ _KIND_BY_EXT = {
     ".gif": "image", ".bmp": "image", ".tiff": "image",
     ".mp4": "video", ".webm": "video", ".mov": "video", ".mkv": "video",
     ".mp3": "audio", ".flac": "audio", ".wav": "audio", ".ogg": "audio", ".m4a": "audio",
-    ".glb": "mesh", ".gltf": "mesh", ".obj": "mesh",
+    ".glb": "mesh", ".gltf": "mesh",
 }
 
 

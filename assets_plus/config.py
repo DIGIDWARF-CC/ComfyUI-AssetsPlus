@@ -19,7 +19,7 @@ class AssetsPlusConfig:
         # audio
         ".mp3", ".flac", ".wav", ".ogg", ".m4a",
         # 3D / mesh
-        ".glb", ".gltf", ".obj",
+        ".glb", ".gltf",
     )
     thumbnail_quality: str = "low"
     list_limit: int = 200
