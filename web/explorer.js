@@ -1,1001 +1,24 @@
 import { app as importedApp } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
-const EXTENSION_NAME = "digidwarf.AssetsPlus";
-const SIDEBAR_TAB_ID = "assets-plus-explorer";
-const OUTPUT_TAB = "output";
-const INPUT_TAB = "input";
+import {
+  OUTPUT_TAB, INPUT_TAB, SETTINGS,
+  DEFAULT_LIST_LIMIT, DEFAULT_THUMB_QUALITY,
+  DEFAULT_DELETE_MODE, DEFAULT_CONFIRM_DELETE,
+  DEFAULT_SHOW_OVERLAY_HELP, DEFAULT_KEEP_OVERLAY_OPEN_ON_WORKFLOW,
+  THUMB_QUALITY_SIZES, VIDEO_THUMB_EXTENSIONS, DEFAULT_EXTENSIONS
+} from './constants.js';
+import {
+  log, warn, sleep, clamp, resolveApp, fetchJson, buildViewUrl,
+  buildThumbUrl, getFileExtension, normalizeWorkflow,
+  workflowFilenameForAsset, resolveWorkflowStore,
+  resolveWorkflowActionsService, resolveThumbnailQuality,
+  resolveThumbnailSize, createElement, createStyleTag
+} from './utils.js';
+import { t } from './i18n.js';
+import { overlayAPI } from './overlay.js';
 
-const DEFAULT_EXTENSIONS = [
-  "png", "jpg", "jpeg", "webp", "gif", "bmp", "tiff",
-  "mp4", "webm", "mov", "mkv",
-  "mp3", "flac", "wav", "ogg", "m4a",
-  "glb", "gltf",
-];
-const VIDEO_THUMB_EXTENSIONS = new Set(["mp4", "webm"]);
-const DEFAULT_LIST_LIMIT = 200;
-const DEFAULT_THUMB_QUALITY = "low";
-const THUMB_QUALITY_SIZES = {
-  low: 256,
-  high: 512,
-};
-const DEFAULT_DELETE_MODE = "trash";
-const DEFAULT_CONFIRM_DELETE = true;
-const DEFAULT_SHOW_OVERLAY_HELP = true;
-const DEFAULT_KEEP_OVERLAY_OPEN_ON_WORKFLOW = false;
-const DEFAULT_LANGUAGE = "en";
-const SETTINGS_CATEGORY = "Assets+";
-const ASSETS_PLUS_SHORTCUTS_CATEGORY = "assets-plus";
-const ASSETS_PLUS_SHORTCUTS_TAB_ID = "shortcuts-assets-plus";
-const ASSETS_PLUS_SHORTCUTS_TAB_CLASS = "assets-plus";
-const ASSETS_PLUS_SHORTCUTS_SUBCATEGORY = "overlay";
-const OVERLAY_COMMANDS = {
-  first: "AssetsPlus.OverlayNavigateFirst",
-  prev: "AssetsPlus.OverlayNavigatePrevious",
-  last: "AssetsPlus.OverlayNavigateLast",
-  next: "AssetsPlus.OverlayNavigateNext",
-  delete: "AssetsPlus.OverlayDelete",
-};
-const OVERLAY_KEYBINDINGS = [
-  {
-    commandId: OVERLAY_COMMANDS.prev,
-    combo: { key: "ArrowLeft" },
-  },
-  {
-    commandId: OVERLAY_COMMANDS.next,
-    combo: { key: "ArrowRight" },
-  },
-  {
-    commandId: OVERLAY_COMMANDS.last,
-    combo: { key: "ArrowDown" },
-  },
-  {
-    commandId: OVERLAY_COMMANDS.delete,
-    combo: { key: "x" },
-  },
-  {
-    commandId: "Workspace.ToggleSidebarTab.assets-plus-explorer",
-    combo: { key: "ArrowUp" },
-  },
-];
-
-const SETTINGS = {
-  listLimit: "AssetsPlus.ListLimit",
-  recursive: "AssetsPlus.RecursiveScan",
-  scanDepth: "AssetsPlus.ScanDepth",
-  deleteMode: "AssetsPlus.DeleteMode",
-  thumbnailQuality: "AssetsPlus.ThumbnailQuality",
-  clearThumbnails: "AssetsPlus.ClearThumbnails",
-  confirmDelete: "AssetsPlus.ConfirmDelete",
-  showOverlayHelp: "AssetsPlus.ShowOverlayHelp",
-  keepOverlayOpenOnWorkflow: "AssetsPlus.KeepOverlayOpenOnWorkflow",
-  language: "AssetsPlus.Language",
-};
-
-const applySettingsCategory = (setting, groupLabel) => ({
-  ...setting,
-  category: [SETTINGS_CATEGORY, groupLabel, setting.id],
-});
-
-const log = (...args) => console.log("[Assets+ Explorer]", ...args);
-const warn = (...args) => console.warn("[Assets+ Explorer]", ...args);
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
-
-const resolveApp = () => window.app || window.comfyApp || window.comfy?.app || importedApp;
-
-const normalizeThumbnailQuality = (value) => {
-  if (typeof value !== "string") return null;
-  const normalized = value.toLowerCase().trim();
-  return Object.prototype.hasOwnProperty.call(THUMB_QUALITY_SIZES, normalized)
-    ? normalized
-    : null;
-};
-
-const inferThumbnailQualityFromSize = (value) => {
-  const size = Number(value);
-  if (!Number.isFinite(size)) return null;
-  return size >= THUMB_QUALITY_SIZES.high ? "high" : "low";
-};
-
-const resolveThumbnailQuality = (qualityValue, sizeFallback) => {
-  return (
-    normalizeThumbnailQuality(qualityValue) ||
-    inferThumbnailQualityFromSize(sizeFallback) ||
-    DEFAULT_THUMB_QUALITY
-  );
-};
-
-const resolveThumbnailSize = (qualityValue, sizeFallback) => {
-  const quality = resolveThumbnailQuality(qualityValue, sizeFallback);
-  return THUMB_QUALITY_SIZES[quality] || THUMB_QUALITY_SIZES[DEFAULT_THUMB_QUALITY];
-};
-
-const createSettingsButtonRenderer = (label, onClick) => {
-  return () => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "assets-plus-settings-button";
-    button.textContent = label;
-    button.addEventListener("click", (event) => {
-      event.preventDefault();
-      onClick?.();
-    });
-    return button;
-  };
-};
-
-const SHORTCUT_KEY_LABELS = {
-  Control: "Ctrl",
-  Meta: "Cmd",
-  ArrowUp: "↑",
-  ArrowDown: "↓",
-  ArrowLeft: "←",
-  ArrowRight: "→",
-  Backspace: "⌫",
-  Delete: "⌦",
-  Enter: "↵",
-  Escape: "Esc",
-  Tab: "⇥",
-  " ": "Space",
-};
-
-const formatShortcutKey = (key) => SHORTCUT_KEY_LABELS[key] || key;
-
-const getKeySequences = (keybinding) => {
-  if (!keybinding?.combo) return [];
-  if (typeof keybinding.combo.getKeySequences === "function") {
-    return keybinding.combo.getKeySequences();
-  }
-  return keybinding.combo.key ? [keybinding.combo.key] : [];
-};
-
-let activeTranslations = {};
-let fallbackTranslations = {};
-let activeLanguage = DEFAULT_LANGUAGE;
-let explorerInstance = null;
-let shortcutsPanelInstance = null;
-
-const t = (key, vars = {}) => {
-  const template = activeTranslations?.[key] ?? fallbackTranslations?.[key] ?? key;
-  if (typeof template !== "string") return String(template);
-  return template.replace(/\{(\w+)\}/g, (match, name) =>
-    Object.prototype.hasOwnProperty.call(vars, name) ? String(vars[name]) : match
-  );
-};
-
-const waitForApp = async () => {
-  const maxAttempts = 200;
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const appInstance = resolveApp();
-    if (appInstance?.registerExtension) {
-      return appInstance;
-    }
-    await sleep(100);
-  }
-  return null;
-};
-
-const fetchJson = async (path, options) => {
-  const response = api?.fetchApi ? await api.fetchApi(path, options) : await fetch(path, options);
-  if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`);
-  }
-  return response.json();
-};
-
-const getSettingValue = (appInstance, id, fallback) => {
-  const sources = [
-    appInstance?.settings?.get?.bind(appInstance?.settings),
-    appInstance?.ui?.settings?.get?.bind(appInstance?.ui?.settings),
-    appInstance?.extensionManager?.setting?.get?.bind(appInstance?.extensionManager?.setting),
-  ].filter(Boolean);
-  for (const getter of sources) {
-    const value = getter(id);
-    if (value !== undefined && value !== null) {
-      return value;
-    }
-  }
-  return fallback;
-};
-
-const loadTranslationsList = async () => {
-  try {
-    const payload = await fetchJson("/assets_plus/i18n");
-    if (Array.isArray(payload?.translations)) {
-      return payload.translations;
-    }
-  } catch (error) {
-    warn(t("log.translations_list_failed"), error);
-  }
-  return [];
-};
-
-const loadTranslationData = async (language) => {
-  try {
-    return await fetchJson(`/assets_plus/i18n?lang=${encodeURIComponent(language)}`);
-  } catch (error) {
-    warn(t("log.translation_load_failed", { language }), error);
-  }
-  return {};
-};
-
-const buildLanguageOptions = (translations) => {
-  if (!translations.length) {
-    return [{ text: DEFAULT_LANGUAGE, value: DEFAULT_LANGUAGE }];
-  }
-  return translations.map((entry) => {
-    const name = entry["translation-name"] || entry.code;
-    const author = entry["translation-author"];
-    const label = author ? `${name} — ${author}` : name;
-    return { text: label, value: entry.code };
-  });
-};
-
-const buildOverlayCommands = () => [
-  {
-    id: OVERLAY_COMMANDS.first,
-    label: () => t("overlay.hint.first"),
-    category: ASSETS_PLUS_SHORTCUTS_CATEGORY,
-    function: () => explorerInstance?.handleOverlayCommand("first"),
-  },
-  {
-    id: OVERLAY_COMMANDS.prev,
-    label: () => t("overlay.hint.previous"),
-    category: ASSETS_PLUS_SHORTCUTS_CATEGORY,
-    function: () => explorerInstance?.handleOverlayCommand("prev"),
-  },
-  {
-    id: OVERLAY_COMMANDS.last,
-    label: () => t("overlay.hint.last"),
-    category: ASSETS_PLUS_SHORTCUTS_CATEGORY,
-    function: () => explorerInstance?.handleOverlayCommand("last"),
-  },
-  {
-    id: OVERLAY_COMMANDS.next,
-    label: () => t("overlay.hint.next"),
-    category: ASSETS_PLUS_SHORTCUTS_CATEGORY,
-    function: () => explorerInstance?.handleOverlayCommand("next"),
-  },
-  {
-    id: OVERLAY_COMMANDS.delete,
-    label: () => t("actions.delete"),
-    category: ASSETS_PLUS_SHORTCUTS_CATEGORY,
-    function: () => explorerInstance?.handleOverlayCommand("delete"),
-  },
-];
-
-const applyLanguage = async (language, { force = false } = {}) => {
-  const normalized = language || DEFAULT_LANGUAGE;
-  if (!force && normalized === activeLanguage) {
-    return;
-  }
-  fallbackTranslations = await loadTranslationData(DEFAULT_LANGUAGE);
-  activeTranslations =
-    normalized === DEFAULT_LANGUAGE
-      ? fallbackTranslations
-      : await loadTranslationData(normalized);
-  activeLanguage = normalized;
-  explorerInstance?.updateTranslations?.();
-  shortcutsPanelInstance?.updateTranslations?.();
-};
-
-const buildSettingsSchema = (t, languageOptions, handleLanguageChange, handleClearThumbnails) => {
-  const settingsGroup = t("settings.group");
-  const withCategory = (setting) => applySettingsCategory(setting, settingsGroup);
-  return [
-    withCategory({
-      id: SETTINGS.listLimit,
-      name: t("settings.list_limit"),
-      type: "number",
-      defaultValue: DEFAULT_LIST_LIMIT,
-      attrs: { min: 50, step: 50 },
-    }),
-    withCategory({
-      id: SETTINGS.recursive,
-      name: t("settings.recursive"),
-      type: "boolean",
-      defaultValue: true,
-    }),
-    withCategory({
-      id: SETTINGS.scanDepth,
-      name: t("settings.scan_depth"),
-      type: "number",
-      defaultValue: 0,
-      attrs: { min: 0, step: 1 },
-    }),
-    withCategory({
-      id: SETTINGS.deleteMode,
-      name: t("settings.delete_mode"),
-      type: "combo",
-      defaultValue: DEFAULT_DELETE_MODE,
-      options: [
-        { text: t("settings.delete_mode.trash"), value: "trash" },
-        { text: t("settings.delete_mode.delete"), value: "delete" },
-        { text: t("settings.delete_mode.hide"), value: "hide" },
-      ],
-    }),
-    withCategory({
-      id: SETTINGS.confirmDelete,
-      name: t("settings.confirm_delete"),
-      type: "boolean",
-      defaultValue: DEFAULT_CONFIRM_DELETE,
-    }),
-    withCategory({
-      id: SETTINGS.showOverlayHelp,
-      name: t("settings.show_overlay_help"),
-      type: "boolean",
-      defaultValue: DEFAULT_SHOW_OVERLAY_HELP,
-    }),
-    withCategory({
-      id: SETTINGS.keepOverlayOpenOnWorkflow,
-      name: t("settings.keep_overlay_open_on_workflow"),
-      type: "boolean",
-      defaultValue: DEFAULT_KEEP_OVERLAY_OPEN_ON_WORKFLOW,
-    }),
-    withCategory({
-      id: SETTINGS.thumbnailQuality,
-      name: t("settings.thumbnail_quality"),
-      type: "combo",
-      defaultValue: DEFAULT_THUMB_QUALITY,
-      options: [
-        { text: t("settings.thumbnail_quality.low"), value: "low" },
-        { text: t("settings.thumbnail_quality.high"), value: "high" },
-      ],
-    }),
-    withCategory({
-      id: SETTINGS.clearThumbnails,
-      name: t("settings.clear_thumbnails"),
-      type: createSettingsButtonRenderer(t("settings.clear_thumbnails"), () => {
-        if (typeof handleClearThumbnails === "function") {
-          handleClearThumbnails();
-        }
-      }),
-      defaultValue: "",
-    }),
-    withCategory({
-      id: SETTINGS.language,
-      name: t("settings.language"),
-      type: "combo",
-      defaultValue: DEFAULT_LANGUAGE,
-      options: languageOptions,
-      onChange: (newValue, oldValue) => {
-        if (typeof handleLanguageChange === "function") {
-          handleLanguageChange(newValue, oldValue);
-        }
-      },
-    }),
-  ];
-};
-
-class AssetsPlusShortcutsPanel {
-  constructor(appInstance, container) {
-    this.app = appInstance;
-    this.container = container;
-    this.render();
-  }
-
-  getCommands() {
-    const commands = this.app?.extensionManager?.command?.commands || [];
-    const commandsById = new Map(commands.map((command) => [command.id, command]));
-    return Object.values(OVERLAY_COMMANDS)
-      .map((id) => commandsById.get(id))
-      .filter(Boolean);
-  }
-
-  buildShortcutItem(command) {
-    const keybinding = command?.keybinding;
-    if (!keybinding) return null;
-    const sequences = getKeySequences(keybinding);
-    if (!sequences.length) return null;
-
-    const item = document.createElement("div");
-    item.className =
-      "shortcut-item flex items-center justify-between rounded py-2 transition-colors duration-200";
-
-    const info = document.createElement("div");
-    info.className = "shortcut-info grow pr-4";
-    const name = document.createElement("div");
-    name.className = "shortcut-name text-sm font-medium";
-    name.textContent = command?.label || command?.id || "";
-    info.append(name);
-
-    const keybindingDisplay = document.createElement("div");
-    keybindingDisplay.className = "keybinding-display shrink-0";
-    const keybindingCombo = document.createElement("div");
-    keybindingCombo.className = "keybinding-combo flex gap-1";
-    keybindingCombo.setAttribute("aria-label", `Keyboard shortcut: ${sequences.join(" + ")}`);
-
-    sequences.forEach((key) => {
-      const badge = document.createElement("span");
-      badge.className =
-        "key-badge min-w-6 rounded bg-muted-background px-2 py-1 text-center font-mono text-xs";
-      badge.textContent = formatShortcutKey(key);
-      keybindingCombo.append(badge);
-    });
-
-    keybindingDisplay.append(keybindingCombo);
-    item.append(info, keybindingDisplay);
-    return item;
-  }
-
-  render() {
-    this.container.innerHTML = "";
-
-    const root = document.createElement("div");
-    root.className = `flex h-full flex-col ${ASSETS_PLUS_SHORTCUTS_TAB_CLASS}`;
-
-    const content = document.createElement("div");
-    content.className = "flex h-full flex-col p-4";
-
-    const scroll = document.createElement("div");
-    scroll.className = "min-h-0 flex-1 overflow-auto";
-
-    const shortcutsList = document.createElement("div");
-    shortcutsList.className = `shortcuts-list flex justify-center ${ASSETS_PLUS_SHORTCUTS_TAB_CLASS}`;
-
-    const grid = document.createElement("div");
-    grid.className = "grid h-full w-[90%] grid-cols-1 gap-4 md:grid-cols-3 md:gap-24";
-
-    const column = document.createElement("div");
-    column.className = "flex flex-col";
-
-    const title = document.createElement("h3");
-    title.className =
-      "subcategory-title mb-4 text-xs font-bold tracking-wide text-text-secondary uppercase";
-    title.textContent = t(`shortcuts.assets_plus.${ASSETS_PLUS_SHORTCUTS_SUBCATEGORY}`);
-
-    const list = document.createElement("div");
-    list.className = "flex flex-col gap-1";
-
-    this.getCommands()
-      .map((command) => this.buildShortcutItem(command))
-      .filter(Boolean)
-      .forEach((item) => list.append(item));
-
-    column.append(title, list);
-    grid.append(column);
-    shortcutsList.append(grid);
-    scroll.append(shortcutsList);
-    content.append(scroll);
-    root.append(content);
-    this.container.append(root);
-  }
-
-  updateTranslations() {
-    this.render();
-  }
-
-  destroy() {
-    this.container.innerHTML = "";
-  }
-}
-
-const buildViewUrl = (relpath, directory) => {
-  const segments = relpath.split("/");
-  const filename = segments.pop() ?? relpath;
-  const subfolder = segments.join("/");
-  const params = new URLSearchParams({ filename, type: directory });
-  if (subfolder) {
-    params.set("subfolder", subfolder);
-  }
-  return `/view?${params.toString()}`;
-};
-
-const buildThumbUrl = (relpath, directory, size) => {
-  const params = new URLSearchParams({
-    relpath,
-    w: String(size),
-    h: String(size),
-  });
-  return `/assets_plus/${directory}/thumb?${params.toString()}`;
-};
-
-const getFileExtension = (filename) => filename.split(".").pop()?.toLowerCase() || "";
-
-const normalizeWorkflow = (workflow) => {
-  if (!workflow) return null;
-  if (typeof workflow === "string") {
-    try {
-      return JSON.parse(workflow);
-    } catch (error) {
-      warn(t("log.workflow_parse_error"), error);
-      return null;
-    }
-  }
-  return workflow;
-};
-
-const workflowFilenameForAsset = (filename) => filename.replace(/\.[^/.]+$/, ".json");
-
-const resolveWorkflowStore = (appInstance) => {
-  const workflowRef = appInstance?.extensionManager?.workflow ?? null;
-  if (!workflowRef) return null;
-  return workflowRef.value ?? workflowRef;
-};
-
-const resolveWorkflowActionsService = (appInstance) => {
-  const fromApp =
-    appInstance?.extensionManager?.workflowActionsService ||
-    appInstance?.extensionManager?.workflowActions ||
-    appInstance?.workflowActionsService ||
-    appInstance?.workflowActions ||
-    null;
-  if (fromApp?.openWorkflowAction) {
-    return fromApp;
-  }
-  return (
-    window?.comfyWorkflowActionsService ||
-    window?.workflowActionsService ||
-    window?.useWorkflowActionsService?.() ||
-    null
-  );
-};
-
-const createElement = (tag, { className, text, attrs } = {}) => {
-  const node = document.createElement(tag);
-  if (className) node.className = className;
-  if (text) node.textContent = text;
-  if (attrs) {
-    Object.entries(attrs).forEach(([key, value]) => {
-      if (value !== undefined && value !== null) {
-        node.setAttribute(key, String(value));
-      }
-    });
-  }
-  return node;
-};
-
-const createStyleTag = () => {
-  const style = document.createElement("style");
-  style.textContent = `
-    .assets-plus-container {
-      display: flex;
-      flex-direction: column;
-      height: 100%;
-      overflow: hidden;
-    }
-    .assets-plus-root {
-      display: flex;
-      flex-direction: column;
-      gap: 0;
-      padding: 0;
-      height: 100%;
-      min-height: 0;
-      overflow: hidden;
-      color: var(--fg-color, #e5e7eb);
-      font-family: var(--font-family, sans-serif);
-      --assets-plus-border: var(--border-color, rgba(148, 163, 184, 0.35));
-      --assets-plus-panel-bg: var(--comfy-menu-bg, var(--bg-color, #0f172a));
-      --assets-plus-control-bg: var(--comfy-menu-secondary-bg, rgba(15, 23, 42, 0.6));
-      --assets-plus-card-bg: var(--comfy-menu-secondary-bg, rgba(15, 23, 42, 0.5));
-      --assets-plus-input-bg: var(--comfy-input-bg, var(--comfy-menu-secondary-bg, #0f172a));
-      --assets-plus-accent: var(--p-primary-color, #2563eb);
-      --assets-plus-accent-contrast: var(--p-primary-contrast-color, #ffffff);
-      --assets-plus-thumb-bg: var(--comfy-menu-bg, var(--bg-color, #0f172a));
-      background: var(--assets-plus-panel-bg);
-    }
-    .assets-plus-header {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      padding: 10px 12px 8px;
-      background: var(--assets-plus-panel-bg);
-      border-bottom: 1px solid var(--assets-plus-border);
-      flex: 0 0 auto;
-    }
-    .assets-plus-body {
-      flex: 1;
-      min-height: 0;
-      overflow: auto;
-      overflow-x: hidden;
-      padding: 0 12px 12px;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-    .assets-plus-title-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-    }
-    .assets-plus-title {
-      font-size: 16px;
-      font-weight: 600;
-    }
-    .assets-plus-controls {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      align-items: center;
-    }
-    .assets-plus-tab {
-      border: 1px solid var(--assets-plus-border);
-      background: var(--assets-plus-control-bg);
-      color: inherit;
-      padding: 4px 10px;
-      border-radius: 6px;
-      cursor: pointer;
-    }
-    .assets-plus-tab.active {
-      background: var(--assets-plus-card-bg);
-      border-color: var(--assets-plus-accent);
-      color: inherit;
-      box-shadow: 0 0 0 1px var(--assets-plus-accent) inset;
-    }
-    .assets-plus-button {
-      border: 1px solid var(--assets-plus-border);
-      background: var(--assets-plus-control-bg);
-      color: inherit;
-      padding: 6px 10px;
-      border-radius: 6px;
-      cursor: pointer;
-    }
-    .assets-plus-button:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
-    .assets-plus-settings-button {
-      border: 1px solid var(--border-color, rgba(148, 163, 184, 0.35));
-      background: var(--comfy-menu-secondary-bg, rgba(15, 23, 42, 0.6));
-      color: var(--fg-color, #e5e7eb);
-      padding: 6px 12px;
-      border-radius: 6px;
-      cursor: pointer;
-    }
-    .assets-plus-settings-button:hover {
-      border-color: var(--p-primary-color, #2563eb);
-    }
-    .assets-plus-input {
-      width: 100%;
-      padding: 6px 8px;
-      border-radius: 6px;
-      border: 1px solid var(--assets-plus-border);
-      background: var(--assets-plus-input-bg);
-      color: inherit;
-    }
-    .assets-plus-search {
-      display: none;
-    }
-    .assets-plus-search.visible {
-      display: block;
-    }
-    .assets-plus-status {
-      font-size: 12px;
-      opacity: 0.8;
-    }
-    .assets-plus-grid {
-      display: grid;
-      gap: 10px;
-      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-    }
-    .assets-plus-card {
-      border: 1px solid var(--assets-plus-border);
-      background: var(--assets-plus-card-bg);
-      border-radius: 8px;
-      overflow: hidden;
-      display: flex;
-      flex-direction: column;
-      cursor: pointer;
-      transition: border 0.15s ease, box-shadow 0.15s ease;
-      position: relative;
-    }
-    .assets-plus-card.selected {
-      border-color: var(--assets-plus-accent);
-      box-shadow: 0 0 0 1px var(--assets-plus-accent);
-    }
-    .assets-plus-checkbox {
-      position: absolute;
-      top: 6px;
-      left: 6px;
-      width: 16px;
-      height: 16px;
-      accent-color: rgba(148, 163, 184, 0.9);
-      z-index: 2;
-      cursor: pointer;
-    }
-    .assets-plus-thumb {
-      width: 100%;
-      height: 120px;
-      background: var(--assets-plus-thumb-bg);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-    .assets-plus-thumb img,
-    .assets-plus-thumb video {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-    }
-    .assets-plus-actions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      align-items: center;
-    }
-    .assets-plus-action-button {
-      border: 1px solid rgba(148, 163, 184, 0.35);
-      background: var(--assets-plus-control-bg);
-      color: inherit;
-      padding: 6px 8px;
-      border-radius: 10px;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      min-width: 32px;
-      min-height: 32px;
-      box-shadow: 0 4px 10px rgba(15, 23, 42, 0.18);
-      backdrop-filter: blur(8px);
-    }
-    .assets-plus-action-button:disabled {
-      opacity: 0.4;
-      cursor: not-allowed;
-    }
-    .assets-plus-action-button .pi {
-      font-size: 14px;
-    }
-    .assets-plus-card-menu {
-      position: absolute;
-      top: 6px;
-      right: 6px;
-      z-index: 3;
-    }
-    .assets-plus-card-menu-button {
-      border: 1px solid rgba(148, 163, 184, 0.35);
-      background: var(--assets-plus-control-bg);
-      color: inherit;
-      padding: 4px 6px;
-      border-radius: 8px;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      backdrop-filter: blur(8px);
-    }
-    .assets-plus-context-menu {
-      position: fixed;
-      z-index: 1001;
-      display: none;
-      min-width: 200px;
-    }
-    .assets-plus-context-menu.open {
-      display: block;
-    }
-    .assets-plus-context-menu-list {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      padding: 6px;
-      border-radius: 10px;
-      border: 1px solid var(--assets-plus-border);
-      background: var(--assets-plus-control-bg);
-      box-shadow: 0 8px 18px rgba(0, 0, 0, 0.25);
-      backdrop-filter: blur(8px);
-    }
-    .assets-plus-context-menu-item {
-      border: 1px solid rgba(148, 163, 184, 0.25);
-      background: var(--assets-plus-card-bg);
-      color: inherit;
-      padding: 6px 8px;
-      border-radius: 8px;
-      cursor: pointer;
-      text-align: left;
-    }
-    .assets-plus-context-menu-item:hover {
-      background: rgba(148, 163, 184, 0.2);
-    }
-    .assets-plus-overlay {
-      position: fixed;
-      inset: 0;
-      background: rgba(0, 0, 0, 0.85);
-      display: flex;
-      flex-direction: column;
-      opacity: 0;
-      visibility: hidden;
-      transition: opacity 0.2s ease;
-      z-index: 9999;
-      color: #e5e7eb;
-    }
-    .assets-plus-overlay.active {
-      opacity: 1;
-      visibility: visible;
-    }
-    .assets-plus-overlay-top {
-      display: flex;
-      align-items: center;
-      padding: 10px 18px;
-      background: rgba(0, 0, 0, 0.65);
-      backdrop-filter: blur(6px);
-      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-      gap: 12px;
-    }
-    .assets-plus-overlay-info {
-      font-size: 13px;
-      opacity: 0.85;
-      display: flex;
-      gap: 12px;
-      align-items: center;
-      flex-wrap: wrap;
-      flex: 1;
-      min-width: 0;
-    }
-    .assets-plus-overlay-top-actions {
-      display: flex;
-      gap: 8px;
-      align-items: center;
-      margin-left: auto;
-    }
-    .assets-plus-icon-button {
-      border: 1px solid rgba(255, 255, 255, 0.2);
-      background: rgba(0, 0, 0, 0.4);
-      color: inherit;
-      padding: 6px 8px;
-      border-radius: 8px;
-      cursor: pointer;
-    }
-    .assets-plus-icon-button.workflow-open {
-      border-color: rgba(140, 220, 170, 0.6);
-      box-shadow: 0 0 0 1px rgba(140, 220, 170, 0.2) inset;
-    }
-    .assets-plus-icon-button.workflow-replace {
-      border-color: rgba(235, 200, 120, 0.7);
-      box-shadow: 0 0 0 1px rgba(235, 200, 120, 0.2) inset;
-    }
-    .assets-plus-icon-button:disabled {
-      opacity: 0.4;
-      cursor: not-allowed;
-    }
-    .assets-plus-icon-button .pi {
-      font-size: 14px;
-    }
-    .assets-plus-overlay-close {
-      border: none;
-      background: transparent;
-      color: inherit;
-      font-size: 24px;
-      cursor: pointer;
-      padding: 4px 10px;
-    }
-    .assets-plus-overlay-body {
-      flex: 1;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 16px;
-      padding: 18px;
-    }
-    .assets-plus-overlay-media {
-      flex: 1;
-      max-height: 100%;
-      max-width: 100%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      overflow: hidden;
-      position: relative;
-    }
-    .assets-plus-overlay-image,
-    .assets-plus-overlay-video {
-      max-width: 100%;
-      max-height: 100%;
-      transform-origin: center center;
-      user-select: none;
-    }
-    .assets-plus-overlay-image.zoomable {
-      cursor: grab;
-    }
-    .assets-plus-overlay-image.zoomable.grabbing {
-      cursor: grabbing;
-    }
-    .assets-plus-overlay-nav {
-      border: 1px solid rgba(255, 255, 255, 0.2);
-      background: rgba(0, 0, 0, 0.4);
-      color: inherit;
-      font-size: 24px;
-      padding: 6px 12px;
-      border-radius: 8px;
-      cursor: pointer;
-    }
-    .assets-plus-overlay-nav:disabled {
-      opacity: 0.4;
-      cursor: not-allowed;
-    }
-    .assets-plus-overlay-actions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      padding: 12px 18px 18px;
-      justify-content: center;
-    }
-    .assets-plus-overlay-actions .assets-plus-button {
-      background: rgba(0, 0, 0, 0.4);
-      border-color: rgba(255, 255, 255, 0.2);
-    }
-    .assets-plus-overlay-reset {
-      position: absolute;
-      right: 24px;
-      bottom: 24px;
-      border: 1px solid rgba(255, 255, 255, 0.3);
-      background: rgba(0, 0, 0, 0.6);
-      color: inherit;
-      padding: 6px 10px;
-      border-radius: 8px;
-      cursor: pointer;
-      opacity: 0;
-      pointer-events: none;
-      transition: opacity 0.2s ease;
-    }
-    .assets-plus-overlay-reset.active {
-      opacity: 1;
-      pointer-events: auto;
-    }
-    .assets-plus-overlay-hint {
-      position: absolute;
-      left: 20px;
-      bottom: 20px;
-      display: grid;
-      grid-template-columns: repeat(3, auto);
-      gap: 6px;
-      padding: 10px;
-      border-radius: 14px;
-      background: rgba(8, 12, 20, 0.55);
-      border: 1px solid rgba(255, 255, 255, 0.15);
-      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
-      backdrop-filter: blur(8px);
-      opacity: 0.55;
-      transition: opacity 0.2s ease;
-      pointer-events: none;
-      z-index: 10001;
-    }
-    .assets-plus-overlay-hint:has(.assets-plus-hint-button:hover) {
-      opacity: 0.95;
-    }
-    .assets-plus-hint-button {
-      pointer-events: auto;
-      border: 1px solid rgba(255, 255, 255, 0.2);
-      background: rgba(0, 0, 0, 0.35);
-      color: inherit;
-      padding: 6px 8px;
-      border-radius: 10px;
-      font-size: 12px;
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      cursor: pointer;
-      min-width: 44px;
-      min-height: 34px;
-      justify-content: center;
-    }
-    .assets-plus-hint-button:disabled {
-      opacity: 0.4;
-      cursor: not-allowed;
-    }
-    .assets-plus-hint-button.danger {
-      background: rgba(255, 140, 0, 0.25);
-      border-color: rgba(255, 140, 0, 0.8);
-    }
-    .assets-plus-hint-key {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      font-weight: 700;
-      font-size: 11px;
-      padding: 2px 6px;
-      border-radius: 6px;
-      border: 1px solid rgba(255, 255, 255, 0.2);
-      background: rgba(0, 0, 0, 0.4);
-      min-width: 18px;
-      height: 18px;
-    }
-  `;
-  return style;
-};
-
-class AssetsPlusExplorer {
+export class AssetsPlusExplorer {
   constructor(appInstance, container) {
     this.app = appInstance;
     this.container = container;
@@ -1031,6 +54,9 @@ class AssetsPlusExplorer {
       overlay: {
         relpath: null,
         zoom: 1,
+        fitZoom: 1,
+        imageWidth: 0,
+        imageHeight: 0,
         offsetX: 0,
         offsetY: 0,
         panning: false,
@@ -1042,7 +68,10 @@ class AssetsPlusExplorer {
     };
     this.elements = {};
     this.overlayPanHandler = null;
+    this.overlayPanEndHandler = null;
+    this.overlayImageLoadId = 0;
     this.documentClickHandler = (event) => this.handleDocumentClick(event);
+    this.overlayKeydownHandler = (event) => this.handleOverlayKeydown(event);
     this.thumbObserver = null;
     this.scrollHandler = null;
     this.apiEventHandlers = [];
@@ -1157,7 +186,24 @@ class AssetsPlusExplorer {
     const overlay = createElement("div", { className: "assets-plus-overlay" });
     const overlayTop = createElement("div", { className: "assets-plus-overlay-top" });
     const overlayInfo = createElement("div", { className: "assets-plus-overlay-info" });
+    const overlayMeta = createElement("div", { className: "assets-plus-overlay-meta" });
+    const overlayFormatBadge = createElement("span", { className: "assets-plus-overlay-badge" });
+    const overlayDimensionsBadge = createElement("span", { className: "assets-plus-overlay-badge" });
+    const overlayZoomBadge = createElement("span", { className: "assets-plus-overlay-badge" });
+    overlayMeta.appendChild(overlayFormatBadge);
+    overlayMeta.appendChild(overlayDimensionsBadge);
+    overlayMeta.appendChild(overlayZoomBadge);
     const overlayTopActions = createElement("div", { className: "assets-plus-overlay-top-actions" });
+    const overlayPrint = createElement("button", {
+      className: "assets-plus-icon-button",
+      attrs: { title: t("actions.print"), "aria-label": t("actions.print") },
+    });
+    overlayPrint.innerHTML = '<i class="pi pi-print"></i>';
+    const overlayCopy = createElement("button", {
+      className: "assets-plus-icon-button",
+      attrs: { title: t("actions.copy_original"), "aria-label": t("actions.copy_original") },
+    });
+    overlayCopy.innerHTML = '<i class="pi pi-copy"></i>';
     const overlayDownload = createElement("button", {
       className: "assets-plus-icon-button",
       attrs: { title: t("actions.download"), "aria-label": t("actions.download") },
@@ -1181,25 +227,28 @@ class AssetsPlusExplorer {
     overlayReplaceWorkflow.innerHTML = '<i class="pi pi-arrow-right-arrow-left"></i>';
     const overlayClose = createElement("button", {
       className: "assets-plus-overlay-close",
-      text: "×",
+      text: "\u00D7",
       attrs: { "aria-label": t("overlay.close") },
     });
+    overlayTopActions.appendChild(overlayPrint);
+    overlayTopActions.appendChild(overlayCopy);
     overlayTopActions.appendChild(overlayDownload);
     overlayTopActions.appendChild(overlayOpenWorkflow);
     overlayTopActions.appendChild(overlayReplaceWorkflow);
     overlayTop.appendChild(overlayInfo);
+    overlayTop.appendChild(overlayMeta);
     overlayTop.appendChild(overlayTopActions);
     overlayTop.appendChild(overlayClose);
 
     const overlayBody = createElement("div", { className: "assets-plus-overlay-body" });
     const overlayPrev = createElement("button", {
       className: "assets-plus-overlay-nav",
-      text: "‹",
+      text: "\u2039",
       attrs: { "aria-label": t("overlay.previous") },
     });
     const overlayNext = createElement("button", {
       className: "assets-plus-overlay-nav",
-      text: "›",
+      text: "\u203A",
       attrs: { "aria-label": t("overlay.next") },
     });
     const overlayMedia = createElement("div", { className: "assets-plus-overlay-media" });
@@ -1305,6 +354,10 @@ class AssetsPlusExplorer {
       deleteButton,
       overlay,
       overlayInfo,
+      overlayMeta,
+      overlayFormatBadge,
+      overlayDimensionsBadge,
+      overlayZoomBadge,
       overlayClose,
       overlayTopActions,
       overlayPrev,
@@ -1312,6 +365,8 @@ class AssetsPlusExplorer {
       overlayMedia,
       overlayImage,
       overlayVideo,
+      overlayPrint,
+      overlayCopy,
       overlayDownload,
       overlayOpenWorkflow,
       overlayReplaceWorkflow,
@@ -1360,6 +415,8 @@ class AssetsPlusExplorer {
     overlayClose.addEventListener("click", () => this.closeOverlay());
     overlayPrev.addEventListener("click", () => this.navigateOverlay(-1));
     overlayNext.addEventListener("click", () => this.navigateOverlay(1));
+    overlayPrint.addEventListener("click", () => this.handlePrintOverlayImage());
+    overlayCopy.addEventListener("click", () => this.handleCopyOriginalToClipboard());
     overlayDownload.addEventListener("click", () => this.handleDownload(this.getOverlayItem()));
     overlayOpenWorkflow.addEventListener("click", () =>
       this.openWorkflow(false, this.getOverlayItem(), { fromOverlay: true })
@@ -1367,7 +424,7 @@ class AssetsPlusExplorer {
     overlayReplaceWorkflow.addEventListener("click", () =>
       this.openWorkflow(true, this.getOverlayItem(), { fromOverlay: true })
     );
-    overlayReset.addEventListener("click", () => this.resetOverlayZoom());
+    overlayReset.addEventListener("click", () => this.setOverlayActualSize());
     overlayHint.addEventListener("click", (event) => this.handleOverlayHintClick(event));
 
     overlayMedia.addEventListener("wheel", (event) => this.handleOverlayZoom(event), {
@@ -1378,12 +435,19 @@ class AssetsPlusExplorer {
     overlayImage.addEventListener("pointerup", () => this.stopOverlayPan());
     overlayImage.addEventListener("pointerleave", () => this.stopOverlayPan());
     overlay.addEventListener("click", (event) => this.handleOverlayBackgroundClick(event));
+    document.addEventListener("keydown", this.overlayKeydownHandler);
 
     this.loadConfig()
       .then(() => this.refreshList())
       .catch(() => this.refreshList());
 
     this.registerApiEvents();
+    // Intercept drops with our custom payload before ComfyUI's canvas handler.
+    this._dragDropHandler = (event) => this.handleDragDrop(event);
+    document.addEventListener("drop", this._dragDropHandler, true);
+    // Accept dragover so the cursor shows "copy" even on loaded nodes.
+    this._dragOverHandler = (event) => this.handleDragOver(event);
+    document.addEventListener("dragover", this._dragOverHandler, true);
   }
 
   updateTranslations() {
@@ -1403,6 +467,8 @@ class AssetsPlusExplorer {
       overlayClose,
       overlayPrev,
       overlayNext,
+      overlayPrint,
+      overlayCopy,
       overlayDownload,
       overlayOpenWorkflow,
       overlayReplaceWorkflow,
@@ -1441,6 +507,14 @@ class AssetsPlusExplorer {
     if (overlayClose) overlayClose.setAttribute("aria-label", t("overlay.close"));
     if (overlayPrev) overlayPrev.setAttribute("aria-label", t("overlay.previous"));
     if (overlayNext) overlayNext.setAttribute("aria-label", t("overlay.next"));
+    if (overlayPrint) {
+      overlayPrint.setAttribute("title", t("actions.print"));
+      overlayPrint.setAttribute("aria-label", t("actions.print"));
+    }
+    if (overlayCopy) {
+      overlayCopy.setAttribute("title", t("actions.copy_original"));
+      overlayCopy.setAttribute("aria-label", t("actions.copy_original"));
+    }
     if (overlayDownload) {
       overlayDownload.setAttribute("title", t("actions.download"));
       overlayDownload.setAttribute("aria-label", t("actions.download"));
@@ -1460,11 +534,190 @@ class AssetsPlusExplorer {
     this.renderGrid({ reset: true });
   }
 
-  detachOverlayHandlers() {
-    this.stopOverlayPan();
+  /** Accept dragover for our custom asset payload so the cursor shows "copy". */
+  handleDragOver(event) {
+    if (!event.dataTransfer?.types.includes("application/x-assetsplus-asset")) return;
+    const canvas = this.app?.canvas;
+    if (!canvas || typeof canvas.adjustMouseEvent !== "function") return;
+    canvas.adjustMouseEvent(event);
+    const node = canvas.graph?.getNodeOnPos(event.canvasX, event.canvasY);
+    if (!node) return;
+    const compat = ["LoadImage", "LoadImageMask", "LoadVideo", "LoadAudio"];
+    if (!compat.includes(node.type)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    this.app.dragOverNode = node;
+  }
+
+  /** Intercept drops carrying our asset payload. */
+  handleDragDrop(event) {
+    const raw = event.dataTransfer?.getData("application/x-assetsplus-asset");
+    if (!raw) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    const canvas = this.app?.canvas;
+    if (canvas && typeof canvas.adjustMouseEvent === "function") {
+      canvas.adjustMouseEvent(event);
+    }
+
+    try {
+      const asset = JSON.parse(raw);
+
+      // Check if there's an existing media node under the cursor \u2192 replace.
+      const hitNode = canvas?.graph?.getNodeOnPos(
+        event.canvasX ?? 0,
+        event.canvasY ?? 0,
+      );
+      if (hitNode) {
+        const nodeType =
+          asset.type === "video" ? "LoadVideo" :
+          asset.type === "audio" ? "LoadAudio" :
+          "LoadImage";
+        // If the target node type matches, set its file widget instead of creating.
+        if (hitNode.type === nodeType) {
+          this.setNodeWidgetValue(hitNode, asset);
+          return;
+        }
+      }
+      // Empty canvas or mismatched node \u2192 create a new node.
+      this.createNodeForAsset(asset, event, canvas);
+    } catch (err) {
+      log("Failed to parse drag payload", err);
+    }
+  }
+
+  /** Fetch the original file as a blob from ComfyUI's /view endpoint. */
+  async fetchOriginalBlob(asset) {
+    const viewUrl = buildViewUrl(asset.relpath, asset.tab);
+    const absoluteUrl = new URL(viewUrl, window.location.origin).href;
+    const resp = await fetch(absoluteUrl);
+    if (!resp.ok) throw new Error(`/view returned ${resp.status}`);
+    return resp.blob();
+  }
+
+  /**
+   * Set the file on a node via its native pasteFile() method.
+   * This is the same code path used by clipboard paste and OS file drop,
+   * guaranteeing proper widget initialisation and clean validation.
+   */
+  async setNodeWidgetValue(node, asset) {
+    const segments = asset.relpath.split("/");
+    const filename = segments.pop();
+    const subfolder = segments.join("/");
+    const valueStr = subfolder
+      ? `${subfolder}/${filename} [output]`
+      : `${filename} [output]`;
+    const resultItem = { filename, subfolder, type: "output" };
+
+    // Direct widget value set.
+    const widgetNames = ["file", "image", "video", "audio"];
+    for (const name of widgetNames) {
+      const w = node.widgets?.find((x) => x.name === name);
+      if (!w) continue;
+
+      if (w.type === "combo") {
+        let values = w.options?.values;
+        if (typeof values === "function") {
+          values = values(w);
+          w.options.values = values;
+        }
+        if (Array.isArray(values) && !values.includes(valueStr)) {
+          values.push(valueStr);
+        }
+        w.value = valueStr;
+      } else if (w.type === "image") {
+        w.value = resultItem;
+      } else {
+        w.value = valueStr;
+      }
+      if (typeof w.callback === "function") {
+        try { w.callback(w.value); } catch (e) { }
+      }
+      break;
+    }
+
+    // Force the graph to re-validate so the red border disappears.
+    const g = this.app?.graph;
+    // Some node definitions have required input slots that won't be
+    // connected when we create the node programmatically.  Walk the
+    // inputs and force them into a "satisfied" state.
+    if (node.inputs) {
+      for (const inp of node.inputs) {
+        if (inp.link != null) continue; // already connected
+        // Mark unconnected required inputs as "linked to self" so the
+        // validator doesn't flag them.
+        if (inp.required) {
+          inp.required = false;
+        }
+      }
+    }
+    if (g) {
+      g.change();
+      g.setDirtyCanvas(true, true);
+    }
+    // Clear any error state on the node.
+    if (node.errors) node.errors.length = 0;
+    if (node.flags) {
+      node.flags.error = false;
+      node.flags.has_errors = false;
+    }
+    // Force-clear the missing-media scanner's flag for our node.
+    // The scanner runs asynchronously and may mark output-annotated
+    // widget values as pending; we remove the node from the candidate
+    // list immediately to hide the transient red border.
+    setTimeout(() => {
+      try {
+        const pinia = document.querySelector("#vue-app")?.__vue_app__
+          ?.config?.globalProperties?.$pinia;
+        const store = pinia?.state?.value?.missingMedia;
+        if (store?.missingMediaCandidates) {
+          const nid = String(node.id);
+          store.missingMediaCandidates = store.missingMediaCandidates.filter(
+            (c) => String(c.nodeId) !== nid
+          );
+          if (!store.missingMediaCandidates.length) {
+            store.missingMediaCandidates = null;
+          }
+        }
+      } catch (_) {}
+      this.app?.canvas?.setDirty(true, true);
+    }, 100);
+  }
+
+  /**
+   * Create a LoadImage / LoadVideo / LoadAudio node on the graph
+   * and wire it to the original file in ComfyUI's output directory.
+   */
+  async createNodeForAsset(asset, event, canvas) {
+    const nodeType =
+      asset.type === "video" ? "LoadVideo" :
+      asset.type === "audio" ? "LoadAudio" :
+      "LoadImage";
+    const node = LiteGraph.createNode(nodeType);
+    if (!node) {
+      warn("Failed to create node type:", nodeType);
+      return;
+    }
+    if (canvas && event.canvasX !== undefined) {
+      node.pos = [event.canvasX, event.canvasY];
+    }
+    // Patch onDragOver so the node accepts our asset type even when already loaded.
+    if (!node._assetsPlusPatched) {
+      node._assetsPlusPatched = true;
+      const origOver = node.onDragOver;
+      node.onDragOver = function (e) {
+        if (e.dataTransfer?.types?.includes("application/x-assetsplus-asset")) return true;
+        return origOver ? origOver.call(this, e) : false;
+      };
+    }
+    this.app?.graph?.add(node);
+    await this.setNodeWidgetValue(node, asset);
   }
 
   destroy() {
+    document.removeEventListener("drop", this._dragDropHandler, true);
+    document.removeEventListener("dragover", this._dragOverHandler, true);
     this.unregisterApiEvents();
     this.disconnectThumbObserver();
     if (this.state.searchDebounceId) {
@@ -1498,7 +751,6 @@ class AssetsPlusExplorer {
     const sources = [
       this.app?.settings?.get?.bind(this.app?.settings),
       this.app?.ui?.settings?.get?.bind(this.app?.ui?.settings),
-      this.app?.extensionManager?.setting?.get?.bind(this.app?.extensionManager?.setting),
     ].filter(Boolean);
     for (const getter of sources) {
       const value = getter(id);
@@ -1884,6 +1136,11 @@ class AssetsPlusExplorer {
         threshold: 0.01,
       }
     );
+    if (this.elements?.grid) {
+      this.elements.grid.querySelectorAll("[data-src]").forEach((el) => {
+        this.thumbObserver?.observe(el);
+      });
+    }
   }
 
   disconnectThumbObserver() {
@@ -1926,6 +1183,7 @@ class AssetsPlusExplorer {
       video.loop = true;
       video.playsInline = true;
       video.preload = "none";
+      video.draggable = false;
       this.observeMedia(video, thumbUrl);
       thumb.appendChild(video);
     } else {
@@ -1933,12 +1191,34 @@ class AssetsPlusExplorer {
       image.alt = item.filename;
       image.loading = "lazy";
       image.decoding = "async";
+      image.draggable = false;
       this.observeMedia(image, thumbUrl);
       thumb.appendChild(image);
     }
 
     card.appendChild(checkbox);
     card.appendChild(thumb);
+    card.draggable = true;
+    card.addEventListener("dragstart", (event) => {
+      // Store the asset payload so our own drop handler can pick it up.
+      const payload = JSON.stringify({
+        relpath: item.relpath,
+        tab: this.state.tab,
+        type: item.type,
+        filename: item.filename,
+      });
+      event.dataTransfer.setData("application/x-assetsplus-asset", payload);
+      // Keep text/uri-list for notebook-paste compatibility.
+      const viewUrl = buildViewUrl(item.relpath, this.state.tab);
+      const absoluteUrl = new URL(viewUrl, window.location.origin).href;
+      event.dataTransfer.setData("text/uri-list", absoluteUrl);
+      event.dataTransfer.setData("text/plain", absoluteUrl);
+      // Thumbnail preview on cursor
+      const thumbEl = thumb.querySelector("img, video");
+      if (thumbEl instanceof HTMLImageElement || thumbEl instanceof HTMLVideoElement) {
+        event.dataTransfer.setDragImage(thumbEl, thumbEl.offsetWidth / 2, thumbEl.offsetHeight / 2);
+      }
+    });
     const hasWorkflow = item.has_workflow && item.type === "image";
     if (hasWorkflow) {
       const menu = createElement("div", { className: "assets-plus-card-menu" });
@@ -2141,14 +1421,36 @@ class AssetsPlusExplorer {
       this.updateLatestMtime(payload.latest_mtime);
     } catch (error) {
       warn(t("log.refresh_failed"), error);
+    } finally {
+      this.state.pendingRefresh[this.state.tab] = false;
     }
   }
 
-  handleDownload(targetItem) {
+  async handleDownload(targetItem) {
     const items = targetItem ? [targetItem] : this.getSelectedItems();
     if (!items.length) return;
-    items.forEach((item) => {
+    for (const item of items) {
       const url = buildViewUrl(item.relpath, this.state.tab);
+      try {
+        const headResponse = await fetch(url, { method: "HEAD" });
+        if (!headResponse.ok) {
+          this.toast({
+            severity: "error",
+            summary: t("toast.summary"),
+            detail: t("toast.download_failed", { filename: item.filename }),
+            life: 3000,
+          });
+          continue;
+        }
+      } catch {
+        this.toast({
+          severity: "error",
+          summary: t("toast.summary"),
+          detail: t("toast.download_failed", { filename: item.filename }),
+          life: 3000,
+        });
+        continue;
+      }
       const link = document.createElement("a");
       link.href = url;
       link.download = item.filename;
@@ -2157,7 +1459,7 @@ class AssetsPlusExplorer {
       document.body.appendChild(link);
       link.click();
       link.remove();
-    });
+    }
   }
 
   async handleDelete(targetItem) {
@@ -2330,477 +1632,6 @@ class AssetsPlusExplorer {
       });
     }
   }
-
-  maybeCloseOverlayAfterWorkflow(options = {}) {
-    if (!options.fromOverlay) return;
-    const { keepOverlayOpenOnWorkflow } = this.getSettingsSnapshot();
-    if (!keepOverlayOpenOnWorkflow) {
-      this.closeOverlay();
-    }
-  }
-
-  getOverlayItem() {
-    if (!this.state.overlay.relpath) return null;
-    return this.state.items.find((item) => item.relpath === this.state.overlay.relpath) || null;
-  }
-
-  openOverlay(relpath) {
-    if (!relpath) return;
-    const item = this.state.items.find((entry) => entry.relpath === relpath);
-    if (!item) return;
-    this.state.overlay.relpath = relpath;
-    this.resetOverlayZoom();
-    this.elements.overlay.classList.add("active");
-    this.updateOverlayShortcutHints();
-    this.updateOverlayView();
-  }
-
-  closeOverlay() {
-    this.elements.overlay.classList.remove("active");
-    this.state.overlay.relpath = null;
-    this.resetOverlayZoom();
-    this.stopOverlayPan();
-    const { overlayVideo, overlayMedia } = this.elements;
-    overlayVideo.pause?.();
-    overlayVideo.removeAttribute("src");
-    overlayVideo.load?.();
-    const audioEl = overlayMedia?.querySelector(".assets-plus-overlay-audio");
-    if (audioEl) {
-      audioEl.pause?.();
-      audioEl.removeAttribute("src");
-      audioEl.load?.();
-    }
-  }
-
-  navigateOverlay(direction) {
-    const items = this.getFilteredItems();
-    if (!items.length || !this.state.overlay.relpath) return;
-    const index = items.findIndex((item) => item.relpath === this.state.overlay.relpath);
-    if (index === -1) return;
-    let nextIndex = index + direction;
-    if (direction === "first") {
-      nextIndex = 0;
-    } else if (direction === "last") {
-      nextIndex = items.length - 1;
-    }
-    if (nextIndex < 0 || nextIndex >= items.length) return;
-    this.state.overlay.relpath = items[nextIndex].relpath;
-    this.resetOverlayZoom();
-    this.updateOverlayView();
-  }
-
-  updateOverlayView() {
-    const item = this.getOverlayItem();
-    if (!item) {
-      this.closeOverlay();
-      return;
-    }
-    const { overlayInfo, overlayPrev, overlayNext, overlayImage, overlayVideo, overlayMedia } = this.elements;
-    const items = this.getFilteredItems();
-    const index = items.findIndex((entry) => entry.relpath === item.relpath);
-    overlayPrev.disabled = index <= 0;
-    overlayNext.disabled = index === -1 || index >= items.length - 1;
-
-    const extension = item.filename.split(".").pop()?.toUpperCase() || "";
-    const dateLabel = new Date(item.mtime * 1000).toLocaleString();
-    overlayInfo.textContent = `${item.filename} • ${extension} • ${dateLabel}`;
-
-    const viewUrl = buildViewUrl(item.relpath, this.state.tab);
-
-    // Hide every media element first; the branch below shows just the one it needs.
-    overlayImage.style.display = "none";
-    overlayVideo.style.display = "none";
-    overlayVideo.pause?.();
-    overlayVideo.removeAttribute("src");
-    overlayVideo.load?.();
-    const _audioEl = overlayMedia.querySelector(".assets-plus-overlay-audio");
-    if (_audioEl) { _audioEl.pause?.(); _audioEl.removeAttribute("src"); _audioEl.style.display = "none"; }
-    const _meshEl = overlayMedia.querySelector(".assets-plus-overlay-mesh");
-    if (_meshEl) { _meshEl.removeAttribute("src"); _meshEl.style.display = "none"; }
-    const _dlEl = overlayMedia.querySelector(".assets-plus-overlay-download");
-    if (_dlEl) { _dlEl.style.display = "none"; }
-
-    if (item.type === "video") {
-      overlayVideo.style.display = "block";
-      overlayVideo.src = viewUrl;
-    } else if (item.type === "audio") {
-      let audio = _audioEl;
-      if (!audio) {
-        audio = document.createElement("audio");
-        audio.className = "assets-plus-overlay-audio";
-        audio.controls = true;
-        audio.style.maxWidth = "90%";
-        audio.style.margin = "auto";
-        overlayMedia.appendChild(audio);
-      }
-      audio.src = viewUrl;
-      audio.style.display = "block";
-    } else if (item.type === "mesh") {
-      // Lazily load the locally-bundled <model-viewer> (works offline / in air-gapped installs).
-      if (!customElements.get("model-viewer")) {
-        if (!document.querySelector('script[data-model-viewer-loader]')) {
-          const mvScript = document.createElement("script");
-          mvScript.type = "module";
-          mvScript.src = new URL("./vendor/model-viewer.min.js", import.meta.url).href;
-          mvScript.dataset.modelViewerLoader = "true";
-          document.head.appendChild(mvScript);
-        }
-      }
-      let viewer = _meshEl;
-      if (!viewer) {
-        viewer = document.createElement("model-viewer");
-        viewer.className = "assets-plus-overlay-mesh";
-        viewer.setAttribute("camera-controls", "");
-        viewer.setAttribute("auto-rotate", "");
-        viewer.setAttribute("shadow-intensity", "1");
-        viewer.setAttribute("environment-image", "neutral");
-        viewer.style.width = "min(90vw, 90vh)";
-        viewer.style.height = "min(90vw, 90vh)";
-        viewer.style.background = "#1a1a20";
-        overlayMedia.appendChild(viewer);
-      }
-      viewer.setAttribute("src", viewUrl);
-      viewer.style.display = "block";
-    } else if (item.type === "other") {
-      let link = _dlEl;
-      if (!link) {
-        link = document.createElement("a");
-        link.className = "assets-plus-overlay-download";
-        link.target = "_blank";
-        link.rel = "noopener";
-        link.style.color = "#cdd";
-        link.style.fontSize = "1.1em";
-        link.style.textDecoration = "underline";
-        link.style.padding = "1em";
-        overlayMedia.appendChild(link);
-      }
-      link.href = viewUrl;
-      link.textContent = `Open ${item.filename} ↗`;
-      link.style.display = "inline-block";
-    } else {
-      overlayImage.style.display = "block";
-      overlayImage.src = viewUrl;
-    }
-    this.updateOverlayActions(item);
-    this.updateOverlayHelpVisibility();
-    this.applyOverlayTransform();
-  }
-
-  handleOverlayBackgroundClick(event) {
-    if (!this.state.overlay.relpath) return;
-    const target = event.target;
-    if (
-      target.closest(".assets-plus-overlay-top") ||
-      target.closest(".assets-plus-overlay-nav") ||
-      target.closest(".assets-plus-overlay-reset") ||
-      target.closest(".assets-plus-overlay-hint")
-    ) {
-      return;
-    }
-    if (target.closest(".assets-plus-overlay-image") || target.closest(".assets-plus-overlay-video") || target.closest(".assets-plus-overlay-mesh") || target.closest(".assets-plus-overlay-audio") || target.closest(".assets-plus-overlay-download") || target.tagName === "MODEL-VIEWER") {
-      return;
-    }
-    this.closeOverlay();
-  }
-
-  handleOverlayHintClick(event) {
-    const button = event.target.closest(".assets-plus-hint-button");
-    if (!button) return;
-    const action = button.getAttribute("data-action");
-    this.handleOverlayCommand(action);
-  }
-
-  handleOverlayCommand(action) {
-    if (!this.state.overlay.relpath) return;
-    if (action === "prev") {
-      this.navigateOverlay(-1);
-    } else if (action === "next") {
-      this.navigateOverlay(1);
-    } else if (action === "first") {
-      this.navigateOverlay("first");
-    } else if (action === "last") {
-      this.navigateOverlay("last");
-    } else if (action === "delete") {
-      const item = this.getOverlayItem();
-      if (item && this.canDeleteCurrentTab()) {
-        this.handleDelete(item);
-      }
-    }
-  }
-
-  getCommandKeybinding(commandId) {
-    const commands = this.app?.extensionManager?.command?.commands || [];
-    const command = commands.find((entry) => entry.id === commandId);
-    return command?.keybinding ?? null;
-  }
-
-  getKeybindingDisplay(commandId) {
-    const keybinding = this.getCommandKeybinding(commandId);
-    const combo = keybinding?.combo;
-    if (!combo) {
-      return { label: "", full: "" };
-    }
-    const sequences =
-      typeof combo.getKeySequences === "function"
-        ? combo.getKeySequences()
-        : [combo.key].filter(Boolean);
-    const full =
-      typeof combo.toString === "function"
-        ? combo.toString()
-        : sequences.length
-        ? sequences.join(" + ")
-        : "";
-    const keyOnly = sequences.length === 1 ? String(sequences[0]) : "";
-    const label = keyOnly.length === 1 ? keyOnly.toUpperCase() : "";
-    return { label, full };
-  }
-
-  updateOverlayShortcutHints() {
-    const {
-      hintUp,
-      hintLeft,
-      hintDown,
-      hintRight,
-      hintDelete,
-      hintUpKey,
-      hintLeftKey,
-      hintDownKey,
-      hintRightKey,
-      hintDeleteKey,
-    } = this.elements;
-    const hintMap = [
-      {
-        button: hintUp,
-        keyEl: hintUpKey,
-        commandId: OVERLAY_COMMANDS.first,
-        title: t("overlay.hint.first"),
-      },
-      {
-        button: hintLeft,
-        keyEl: hintLeftKey,
-        commandId: OVERLAY_COMMANDS.prev,
-        title: t("overlay.hint.previous"),
-      },
-      {
-        button: hintDown,
-        keyEl: hintDownKey,
-        commandId: OVERLAY_COMMANDS.last,
-        title: t("overlay.hint.last"),
-      },
-      {
-        button: hintRight,
-        keyEl: hintRightKey,
-        commandId: OVERLAY_COMMANDS.next,
-        title: t("overlay.hint.next"),
-      },
-      {
-        button: hintDelete,
-        keyEl: hintDeleteKey,
-        commandId: OVERLAY_COMMANDS.delete,
-        title: t("actions.delete"),
-      },
-    ];
-    hintMap.forEach(({ button, keyEl, commandId, title }) => {
-      if (!button || !keyEl) return;
-      const { label, full } = this.getKeybindingDisplay(commandId);
-      keyEl.textContent = label;
-      keyEl.style.visibility = label ? "visible" : "hidden";
-      const nextTitle = full ? `${title} (${full})` : title;
-      button.setAttribute("title", nextTitle);
-    });
-  }
-
-  updateOverlayHelpVisibility() {
-    const { overlayHint, hintDelete } = this.elements;
-    if (!overlayHint) return;
-    const { showOverlayHelp } = this.getSettingsSnapshot();
-    overlayHint.style.display = showOverlayHelp ? "grid" : "none";
-    if (hintDelete) {
-      hintDelete.disabled = !this.canDeleteCurrentTab();
-    }
-    this.updateOverlayShortcutHints();
-  }
-
-  updateOverlayActions(item) {
-    const { overlayOpenWorkflow, overlayReplaceWorkflow } = this.elements;
-    const hasWorkflow = item?.has_workflow && item?.type === "image";
-    overlayOpenWorkflow.disabled = !hasWorkflow;
-    overlayReplaceWorkflow.disabled = !hasWorkflow;
-  }
-
-  resetOverlayZoom() {
-    this.state.overlay.zoom = 1;
-    this.state.overlay.offsetX = 0;
-    this.state.overlay.offsetY = 0;
-    this.applyOverlayTransform();
-    this.updateOverlayResetButton();
-  }
-
-  updateOverlayResetButton() {
-    const isActive = Math.abs(this.state.overlay.zoom - 1) > 0.01;
-    this.elements.overlayReset.classList.toggle("active", isActive);
-  }
-
-  applyOverlayTransform() {
-    const { overlayImage } = this.elements;
-    const item = this.getOverlayItem();
-    if (!item || item.type !== "image") {
-      overlayImage.style.transform = "";
-      overlayImage.classList.remove("zoomable", "grabbing");
-      return;
-    }
-    const { zoom, offsetX, offsetY } = this.state.overlay;
-    overlayImage.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${zoom})`;
-    overlayImage.classList.toggle("zoomable", zoom > 1);
-  }
-
-  handleOverlayZoom(event) {
-    const item = this.getOverlayItem();
-    if (!item || item.type !== "image") return;
-    event.preventDefault();
-    const { overlayMedia } = this.elements;
-    const rect = overlayMedia.getBoundingClientRect();
-    const centerX = rect.left + rect.width / 2;
-    const centerY = rect.top + rect.height / 2;
-    const cursorX = event.clientX - centerX;
-    const cursorY = event.clientY - centerY;
-    const direction = event.deltaY < 0 ? 1.1 : 0.9;
-    const previousZoom = this.state.overlay.zoom;
-    const nextZoom = clamp(previousZoom * direction, 1, 6);
-    const scaleChange = nextZoom / previousZoom;
-    this.state.overlay.zoom = nextZoom;
-    this.state.overlay.offsetX =
-      (this.state.overlay.offsetX - cursorX) * scaleChange + cursorX;
-    this.state.overlay.offsetY =
-      (this.state.overlay.offsetY - cursorY) * scaleChange + cursorY;
-    if (nextZoom === 1) {
-      this.state.overlay.offsetX = 0;
-      this.state.overlay.offsetY = 0;
-    }
-    this.applyOverlayTransform();
-    this.updateOverlayResetButton();
-  }
-
-  startOverlayPan(event) {
-    const item = this.getOverlayItem();
-    if (!item || item.type !== "image") return;
-    if (this.state.overlay.zoom <= 1) return;
-    event.preventDefault();
-    this.state.overlay.panning = true;
-    this.state.overlay.panStartX = event.clientX;
-    this.state.overlay.panStartY = event.clientY;
-    this.state.overlay.panOriginX = this.state.overlay.offsetX;
-    this.state.overlay.panOriginY = this.state.overlay.offsetY;
-    this.elements.overlayImage.classList.add("grabbing");
-    this.overlayPanHandler = (moveEvent) => {
-      if (!this.state.overlay.panning) return;
-      const dx = moveEvent.clientX - this.state.overlay.panStartX;
-      const dy = moveEvent.clientY - this.state.overlay.panStartY;
-      this.state.overlay.offsetX = this.state.overlay.panOriginX + dx;
-      this.state.overlay.offsetY = this.state.overlay.panOriginY + dy;
-      this.applyOverlayTransform();
-    };
-    window.addEventListener("pointermove", this.overlayPanHandler);
-    window.addEventListener("pointerup", () => this.stopOverlayPan(), { once: true });
-  }
-
-  stopOverlayPan() {
-    if (this.overlayPanHandler) {
-      window.removeEventListener("pointermove", this.overlayPanHandler);
-      this.overlayPanHandler = null;
-    }
-    this.state.overlay.panning = false;
-    if (this.elements.overlayImage) {
-      this.elements.overlayImage.classList.remove("grabbing");
-    }
-  }
 }
 
-const registerSidebarTab = (appInstance) => {
-  if (!appInstance?.extensionManager?.registerSidebarTab) {
-    warn(t("log.register_sidebar_unavailable"));
-    return;
-  }
-
-  appInstance.extensionManager.registerSidebarTab({
-    id: SIDEBAR_TAB_ID,
-    icon: "pi pi-folder-open",
-    title: t("app.title"),
-    tooltip: t("app.tooltip"),
-    label: t("app.label"),
-    type: "custom",
-    render: (container) => {
-      log(t("log.render_sidebar"));
-      explorerInstance?.destroy?.();
-      explorerInstance = new AssetsPlusExplorer(appInstance, container);
-    },
-    destroy: () => {
-      explorerInstance?.destroy?.();
-      explorerInstance = null;
-    },
-  });
-};
-
-const buildShortcutsPanelTab = (appInstance) => ({
-  id: ASSETS_PLUS_SHORTCUTS_TAB_ID,
-  title: t("shortcuts.assets_plus"),
-  type: "custom",
-  targetPanel: "shortcuts",
-  render: (container) => {
-    shortcutsPanelInstance?.destroy?.();
-    shortcutsPanelInstance = new AssetsPlusShortcutsPanel(appInstance, container);
-  },
-  destroy: () => {
-    shortcutsPanelInstance?.destroy?.();
-    shortcutsPanelInstance = null;
-  },
-});
-
-const boot = async () => {
-  const appInstance = await waitForApp();
-  if (!appInstance) {
-    warn(t("log.app_wait_failed"));
-    return;
-  }
-
-  const translationsList = await loadTranslationsList();
-  const languageSetting = String(getSettingValue(appInstance, SETTINGS.language, DEFAULT_LANGUAGE));
-  const selectedLanguage = languageSetting || DEFAULT_LANGUAGE;
-  await applyLanguage(selectedLanguage, { force: true });
-  const languageOptions = buildLanguageOptions(translationsList);
-  const toast = (detail, severity = "info") => {
-    appInstance?.extensionManager?.toast?.add?.({
-      summary: t("toast.summary"),
-      detail,
-      severity,
-    });
-  };
-  const handleClearThumbnails = async () => {
-    try {
-      await fetchJson("/assets_plus/thumb/clear", { method: "POST" });
-      toast(t("toast.thumbnails_cleared"));
-    } catch (error) {
-      warn(t("log.clear_thumbnails_failed"), error);
-      toast(t("toast.thumbnails_clear_failed"), "error");
-    }
-  };
-
-  appInstance.registerExtension({
-    name: EXTENSION_NAME,
-    commands: buildOverlayCommands(),
-    keybindings: OVERLAY_KEYBINDINGS,
-    bottomPanelTabs: [buildShortcutsPanelTab(appInstance)],
-    settings: buildSettingsSchema(t, languageOptions, (newValue) => {
-      const nextLanguage = String(newValue || DEFAULT_LANGUAGE);
-      if (nextLanguage === activeLanguage) return;
-      applyLanguage(nextLanguage).catch((error) => {
-        warn(t("log.translation_load_failed", { language: nextLanguage }), error);
-      });
-    }, handleClearThumbnails),
-    setup(app) {
-      registerSidebarTab(app);
-    },
-  });
-};
-
-boot();
+Object.assign(AssetsPlusExplorer.prototype, overlayAPI);
