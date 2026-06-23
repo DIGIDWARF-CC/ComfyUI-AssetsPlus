@@ -1,4 +1,4 @@
-# ComfyUI-AssetsPlus <img alt="Static Badge" src="https://img.shields.io/badge/OpenAI-Codex-gray?style=plastic&label=OpenAI&labelColor=0fa37f&color=gray">
+# ComfyUI-AssetsPlus <img alt="Static Badge" src="https://img.shields.io/badge/OpenAI-Codex-gray?style=plastic&label=OpenAI&labelColor=0fa37f&color=gray"> <img alt="Static Badge" src="https://img.shields.io/badge/DeepSeek-gray?style=plastic&logo=DeepSeek&color=%23090D33">
 <p align="center">
   <img src="/meta/img/logo_1024x700.png" alt="ai-generated assets-plus logo" width="600"/>
 </p>
@@ -7,7 +7,9 @@ Assets+ is an extension for ComfyUI that adds the **Assets+ Explorer** sidebar p
 persistent overview of the output and input directories via the `/assets_plus` API.
 
 ## Disclaimer about AI usage
-* This extension code was written almost purely by OpenAI Codex. Please report any quirks or mishaps at Issues page.
+* The base of this extension was written almost purely by OpenAI Codex.
+* [OpenCode](https://github.com/anomalyco/opencode) and [OhMyOpenagent](https://github.com/code-yeongyu/oh-my-openagent) environments were used harnessing powers of [DeepSeek V4 Flash Free](https://openrouter.ai/deepseek/deepseek-v4-flash:free)
+* Please report any quirks or mishaps at Issues page.
 * Any PRs will be greatly appreciated, thank you!
 
 ## Installation
@@ -18,8 +20,8 @@ persistent overview of the output and input directories via the `/assets_plus` A
 3. (Optional) To enable sending files to the trash bin, install the dependency:
    `pip install send2trash`.
 
-The frontend part is located at `custom_nodes/ComfyUI-AssetsPlus/web/assets_plus.js` and will be
-loaded automatically.
+The frontend consists of 8 ES-modules in `custom_nodes/ComfyUI-AssetsPlus/web/` and is
+loaded automatically by ComfyUI.
 
 ## How to open Assets+ Explorer
 
@@ -112,7 +114,7 @@ If there’s no metadata, the menu is hidden.
 The extension structure matches Manager requirements:
 
 * `__init__.py` exports `WEB_DIRECTORY` so the frontend is picked up automatically.
-* `web/assets_plus.js` registers the **Assets+ Explorer** tab via `registerSidebarTab`.
+* `web/main.js` registers the **Assets+ Explorer** tab via `registerSidebarTab`.
 * No extra installation steps are needed besides restarting ComfyUI.
 
 ## Notes
