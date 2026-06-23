@@ -3,8 +3,11 @@ name = "ComfyUI-AssetsPlus"
 description = "Adds 'Assets+' tool to ComfyUI sidebar, which builds upon 'Media Assets' idea albeit expands it to bring Gallery-like experience to Windows machines"
 version = "1.0.2"
 license = {file = "LICENSE"} 
+requires-python = ">=3.9"
 classifiers = [
-    "Operating System :: Microsoft :: Windows"
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
 ]
 
 [project.urls]
@@ -12,6 +15,9 @@ Repository = "https://github.com/DIGIDWARF-CC/ComfyUI-AssetsPlus"
 #  Used by Comfy Registry https://registry.comfy.org
 Documentation = "https://github.com/DIGIDWARF-CC/ComfyUI-AssetsPlus/wiki"
 "Bug Tracker" = "https://github.com/DIGIDWARF-CC/ComfyUI-AssetsPlus/issues"
+
+[project.optional-dependencies]
+test = ["pytest", "pytest-asyncio", "Pillow"]
 
 [tool.comfy]
 PublisherId = "digidwarf"
