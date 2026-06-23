@@ -63,6 +63,10 @@ package-lock.json
 config.local.*
 settings.local.*
 
+# Agent internals
+.agent-docs/
+AGENTS.md
+
 logs/
 
 models/

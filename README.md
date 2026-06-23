@@ -74,7 +74,7 @@ Example:
 * Thumbnails via `/assets_plus/output/thumb` and `/assets_plus/input/thumb`.
 * Workflow/prompt metadata via `/assets_plus/output/meta` and `/assets_plus/input/meta`.
 * Deleting from disk (trash/delete) or hiding (hide) with confirmation in both tabs.
-* Full-screen lens overlay with navigation, workflow actions, zoom/pan controls, and keybindings registered in ComfyUI.
+* Full-screen lens overlay with navigation, workflow actions, zoom/pan controls, Esc-to-close, image format/size/zoom badges, and quick print/copy actions for images.
 * Assets+ shortcuts tab in the ComfyUI Shortcuts panel for overlay navigation actions.
 * Multi-selection via checkboxes on each asset tile.
 * Sticky header with icon-based actions (search toggle, select all, invert selection, download/delete) while only the gallery area scrolls.

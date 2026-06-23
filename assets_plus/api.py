@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Generator
 
 from aiohttp import web
 
@@ -15,7 +17,7 @@ from PIL import Image
 from server import PromptServer
 
 from .config import load_config, thumbnail_size_from_quality
-from .storage import HiddenEntry, load_hidden, save_hidden, thumb_cache_dir
+from .storage import HiddenEntry, load_hidden, thumb_cache_dir, update_hidden, evict_thumb_cache
 
 import importlib.util
 
@@ -81,21 +83,43 @@ def allowed_extension(filename: str, extensions: tuple[str, ...]) -> bool:
     return filename.lower().endswith(tuple(ext.lower() for ext in extensions))
 
 
-def iter_output_files(output_dir: Path, recursive: bool, scan_depth: int | None) -> list[Path]:
-    if scan_depth is None:
-        return list(output_dir.rglob("*") if recursive else output_dir.glob("*"))
-    files: list[Path] = []
-    for root, dirs, filenames in os.walk(output_dir):
-        root_path = Path(root)
-        depth = len(root_path.relative_to(output_dir).parts)
-        if depth > scan_depth:
-            dirs[:] = []
-            continue
-        if depth >= scan_depth:
-            dirs[:] = []
-        for filename in filenames:
-            files.append(root_path / filename)
-    return files
+def _iter_files(
+    base_dir: Path,
+    extensions: tuple[str, ...],
+    recursive: bool,
+    scan_depth: int | None,
+) -> Generator[tuple[str, Path, int, int], None, None]:
+    """Lazily yield (relpath, path, mtime, size) for files matching extensions.
+
+    Uses os.scandir for efficient directory traversal with early filtering.
+    Handles broken symlinks gracefully (skips them).
+    """
+    def _scan(directory: Path, depth: int = 0) -> Generator[tuple[str, Path, int, int], None, None]:
+        if scan_depth is not None and depth > scan_depth:
+            return
+        try:
+            with os.scandir(str(directory)) as it:
+                for entry in it:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            if recursive and (scan_depth is None or depth < scan_depth):
+                                yield from _scan(Path(entry.path), depth + 1)
+                            continue
+                        if not entry.is_file(follow_symlinks=False):
+                            continue
+                        path = Path(entry.path)
+                        ext = path.suffix.lower()
+                        if not allowed_extension(path.name, extensions):
+                            continue
+                        stat_result = entry.stat()
+                        relpath = path.relative_to(base_dir).as_posix()
+                        yield relpath, path, int(stat_result.st_mtime), stat_result.st_size
+                    except (OSError, FileNotFoundError):
+                        continue
+        except (OSError, FileNotFoundError):
+            return
+
+    yield from _scan(base_dir)
 
 
 def list_directory_items(
@@ -110,32 +134,29 @@ def list_directory_items(
     hidden = hidden or {}
     query_normalized = query.strip().lower() if query else ""
     items: list[dict[str, Any]] = []
-    for path in iter_output_files(base_dir, recursive, scan_depth):
-        if not path.is_file():
-            continue
-        relpath = path.relative_to(base_dir).as_posix()
-        if not allowed_extension(path.name, extensions):
-            continue
+
+    for relpath, path, mtime, size in _iter_files(base_dir, extensions, recursive, scan_depth):
         if query_normalized:
             haystack = f"{path.name} {relpath}".lower()
             if query_normalized not in haystack:
                 continue
-        stat = path.stat()
         hidden_key = f"{hidden_prefix}{relpath}" if hidden_prefix else relpath
         hidden_entry = hidden.get(hidden_key)
-        if hidden_entry and hidden_entry.mtime == int(stat.st_mtime) and hidden_entry.size == stat.st_size:
+        if hidden_entry and hidden_entry.mtime == mtime and hidden_entry.size == size:
             continue
         file_type = _classify_kind(path)
-        items.append(
-            {
-                "relpath": relpath,
-                "filename": path.name,
-                "mtime": int(stat.st_mtime),
-                "size": stat.st_size,
-                "type": file_type,
-                "has_workflow": file_type == "image" and has_workflow_metadata(path),
-            }
-        )
+        has_wf = False
+        if file_type == "image":
+            has_wf, _ = read_workflow_metadata(path)
+        items.append({
+            "relpath": relpath,
+            "filename": path.name,
+            "mtime": mtime,
+            "size": size,
+            "type": file_type,
+            "has_workflow": has_wf,
+        })
+
     items.sort(key=lambda item: (-item["mtime"], item["relpath"]))
     return items
 
@@ -155,8 +176,12 @@ def _classify_kind(path: Path) -> str:
     return _KIND_BY_EXT.get(path.suffix.lower(), "other")
 
 
-def _placeholder_png(label: str, width: int, height: int) -> Path:
-    """Render (and cache) a tiny labeled placeholder image. Idempotent."""
+def _placeholder_png(label: str, width: int, height: int) -> Path | None:
+    """Render (and cache) a tiny labeled placeholder image. Idempotent.
+    
+    Returns the path to the cached placeholder, or *None* if rendering
+    fails (callers must handle the None gracefully).
+    """
     cache = thumb_cache_dir() / f"_placeholder_{label}_{width}x{height}.png"
     if cache.exists():
         return cache
@@ -171,31 +196,50 @@ def _placeholder_png(label: str, width: int, height: int) -> Path:
         except Exception:
             pass
         img.save(cache, format="PNG")
+        return cache
     except Exception:
-        cache.write_bytes(b"")
-    return cache
+        if cache.exists():
+            cache.unlink()
+        return None
 
 
-def has_workflow_metadata(path: Path) -> bool:
+_metadata_cache: dict[str, tuple[float, bool, dict[str, Any]]] = {}
+METADATA_CACHE_TTL = 5.0
+
+
+def read_workflow_metadata(path: Path) -> tuple[bool, dict[str, Any]]:
+    """Read workflow metadata from an image file.
+
+    Returns (has_workflow, metadata_dict).
+    Results are cached in memory with TTL to avoid repeated disk I/O.
+    """
+    cache_key = str(path.resolve())
+    cached = _metadata_cache.get(cache_key)
+    if cached is not None:
+        cache_time, has_wf, metadata = cached
+        if time.monotonic() - cache_time < METADATA_CACHE_TTL:
+            return has_wf, metadata
+
     try:
         with Image.open(path) as image:
             info = image.info or {}
     except OSError:
-        return False
-    return bool(info.get("workflow") or info.get("prompt"))
+        _metadata_cache[cache_key] = (time.monotonic(), False, {})
+        return False, {}
 
-
-def read_metadata(path: Path) -> dict[str, Any]:
-    try:
-        with Image.open(path) as image:
-            info = image.info or {}
-    except OSError:
-        return {}
     metadata: dict[str, Any] = {}
     for key in ("workflow", "prompt"):
         value = info.get(key)
         if value:
             metadata[key] = value
+    has_wf = bool(metadata)
+    _metadata_cache[cache_key] = (time.monotonic(), has_wf, metadata)
+    return has_wf, metadata
+
+
+def read_metadata(path: Path) -> dict[str, Any]:
+    """Read metadata from an image file. Backward-compatible wrapper."""
+    _, metadata = read_workflow_metadata(path)
     return metadata
 
 
@@ -285,11 +329,10 @@ def apply_since_filter(
     return [item for item in items if item["mtime"] > since]
 
 
-@PromptServer.instance.routes.get("/assets_plus/output/list")
-async def output_list(request: web.Request) -> web.Response:
+def _build_list_response(base_dir: Path, hidden_prefix: str, params: dict[str, str]) -> dict[str, Any]:
+    """Shared logic for output_list and input_list handlers."""
     config = load_config()
-    params = request.rel_url.query
-    LOGGER.info("Assets+ output list request params=%s", dict(params))
+
     extensions_param = params.get("extensions")
     if extensions_param:
         extensions = tuple(
@@ -297,6 +340,7 @@ async def output_list(request: web.Request) -> web.Response:
         )
     else:
         extensions = config.allowed_extensions
+
     scan_depth_param = params.get("scan_depth")
     scan_depth = None
     if scan_depth_param is not None:
@@ -308,6 +352,7 @@ async def output_list(request: web.Request) -> web.Response:
         scan_depth = config.scan_depth
     if scan_depth is not None and scan_depth < 0:
         scan_depth = None
+
     recursive = params.get("recursive", "1") not in {"0", "false", "False"}
     limit = int(params.get("limit", config.list_limit))
     cursor = parse_cursor(params.get("cursor"))
@@ -320,100 +365,47 @@ async def output_list(request: web.Request) -> web.Response:
         except ValueError:
             since = None
 
-    output_dir = get_output_directory()
     hidden = load_hidden()
     items = list_directory_items(
-        output_dir,
-        extensions,
-        recursive,
-        scan_depth,
-        hidden=hidden,
-        query=query,
+        base_dir, extensions, recursive, scan_depth,
+        hidden=hidden, hidden_prefix=hidden_prefix, query=query,
     )
     latest_mtime = items[0]["mtime"] if items else 0
+
     if since is not None:
         items = apply_since_filter(items, since)
     else:
         items = apply_cursor_filter(items, cursor)
+
     has_more = False
     if limit:
         has_more = len(items) > limit
         items = items[:limit]
+
     next_cursor = encode_cursor(items[-1]) if items else params.get("cursor") or ""
-    return web.json_response(
-        {
-            "items": items,
-            "cursor": next_cursor,
-            "has_more": has_more,
-            "latest_mtime": latest_mtime,
-        }
-    )
+
+    return {
+        "items": items,
+        "cursor": next_cursor,
+        "has_more": has_more,
+        "latest_mtime": latest_mtime,
+    }
+
+
+@PromptServer.instance.routes.get("/assets_plus/output/list")
+async def output_list(request: web.Request) -> web.Response:
+    params = request.rel_url.query
+    LOGGER.info("Assets+ output list request params=%s", dict(params))
+    result = _build_list_response(get_output_directory(), "", params)
+    return web.json_response(result)
 
 
 @PromptServer.instance.routes.get("/assets_plus/input/list")
 async def input_list(request: web.Request) -> web.Response:
-    config = load_config()
     params = request.rel_url.query
     LOGGER.info("Assets+ input list request params=%s", dict(params))
-    extensions_param = params.get("extensions")
-    if extensions_param:
-        extensions = tuple(
-            ext if ext.startswith(".") else f".{ext}" for ext in extensions_param.split(",") if ext
-        )
-    else:
-        extensions = config.allowed_extensions
-    scan_depth_param = params.get("scan_depth")
-    scan_depth = None
-    if scan_depth_param is not None:
-        try:
-            scan_depth = int(scan_depth_param)
-        except ValueError:
-            scan_depth = config.scan_depth
-    else:
-        scan_depth = config.scan_depth
-    if scan_depth is not None and scan_depth < 0:
-        scan_depth = None
-    recursive = params.get("recursive", "1") not in {"0", "false", "False"}
-    limit = int(params.get("limit", config.list_limit))
-    cursor = parse_cursor(params.get("cursor"))
-    query = params.get("query") or params.get("q")
-    since_param = params.get("since")
-    since = None
-    if since_param is not None:
-        try:
-            since = int(since_param)
-        except ValueError:
-            since = None
-
-    input_dir = get_input_directory()
-    hidden = load_hidden()
-    items = list_directory_items(
-        input_dir,
-        extensions,
-        recursive,
-        scan_depth,
-        hidden=hidden,
-        hidden_prefix="input/",
-        query=query,
-    )
-    latest_mtime = items[0]["mtime"] if items else 0
-    if since is not None:
-        items = apply_since_filter(items, since)
-    else:
-        items = apply_cursor_filter(items, cursor)
-    has_more = False
-    if limit:
-        has_more = len(items) > limit
-        items = items[:limit]
-    next_cursor = encode_cursor(items[-1]) if items else params.get("cursor") or ""
-    return web.json_response(
-        {
-            "items": items,
-            "cursor": next_cursor,
-            "has_more": has_more,
-            "latest_mtime": latest_mtime,
-        }
-    )
+    result = _build_list_response(get_input_directory(), "input/", params)
+    return web.json_response(result)
 
 
 @PromptServer.instance.routes.get("/assets_plus/config")
@@ -433,6 +425,43 @@ async def assets_plus_config(_: web.Request) -> web.Response:
     )
 
 
+def _set_content_type(response: web.StreamResponse, path: Path) -> None:
+    """Set Content-Type header based on file extension."""
+    ext = path.suffix.lower()
+    content_types = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+        ".bmp": "image/bmp",
+        ".tiff": "image/tiff",
+        ".mp4": "video/mp4",
+        ".webm": "video/webm",
+        ".mov": "video/quicktime",
+        ".mkv": "video/x-matroska",
+        ".mp3": "audio/mpeg",
+        ".flac": "audio/flac",
+        ".wav": "audio/wav",
+        ".ogg": "audio/ogg",
+        ".m4a": "audio/mp4",
+        ".glb": "model/gltf-binary",
+        ".gltf": "model/gltf+json",
+    }
+    content_type = content_types.get(ext, "application/octet-stream")
+    response.headers["Content-Type"] = content_type
+
+
+async def _generate_thumbnail(path: Path, width: int, height: int, cache_path: Path) -> None:
+    """Generate thumbnail in thread pool with timeout."""
+    def _sync_thumb() -> None:
+        with Image.open(path) as image:
+            image.thumbnail((width, height))
+            image.save(cache_path, format="PNG")
+            evict_thumb_cache()
+    await asyncio.wait_for(asyncio.to_thread(_sync_thumb), timeout=30.0)
+
+
 @PromptServer.instance.routes.get("/assets_plus/output/thumb")
 async def output_thumb(request: web.Request) -> web.StreamResponse:
     config = load_config()
@@ -448,27 +477,41 @@ async def output_thumb(request: web.Request) -> web.StreamResponse:
         raise web.HTTPNotFound(text="Asset not found")
 
     if path.suffix.lower() in {".mp4", ".webm"}:
-        return web.FileResponse(path=path)
+        resp = web.FileResponse(path=path)
+        _set_content_type(resp, path)
+        return resp
 
     kind = _classify_kind(path)
     if kind not in ("image",):
-        return web.FileResponse(path=_placeholder_png(kind, width, height))
+        placeholder = _placeholder_png(kind, width, height)
+        if placeholder is None:
+            raise web.HTTPInternalServerError(text="Failed to generate placeholder")
+        resp = web.FileResponse(path=placeholder)
+        _set_content_type(resp, placeholder)
+        return resp
 
     stat = path.stat()
     cache_key = build_thumb_cache_key(relpath, int(stat.st_mtime), stat.st_size, width, height)
     cache_path = thumb_cache_dir() / f"{cache_key}.png"
 
     if cache_path.exists():
-        return web.FileResponse(path=cache_path)
+        resp = web.FileResponse(path=cache_path)
+        _set_content_type(resp, cache_path)
+        return resp
 
     try:
-        with Image.open(path) as image:
-            image.thumbnail((width, height))
-            image.save(cache_path, format="PNG")
-    except OSError:
-        return web.FileResponse(path=_placeholder_png("other", width, height))
+        await _generate_thumbnail(path, width, height, cache_path)
+    except (OSError, asyncio.TimeoutError):
+        placeholder = _placeholder_png("other", width, height)
+        if placeholder is None:
+            raise web.HTTPInternalServerError(text="Failed to generate placeholder")
+        resp = web.FileResponse(path=placeholder)
+        _set_content_type(resp, placeholder)
+        return resp
 
-    return web.FileResponse(path=cache_path)
+    resp = web.FileResponse(path=cache_path)
+    _set_content_type(resp, cache_path)
+    return resp
 
 
 @PromptServer.instance.routes.get("/assets_plus/input/thumb")
@@ -486,27 +529,41 @@ async def input_thumb(request: web.Request) -> web.StreamResponse:
         raise web.HTTPNotFound(text="Asset not found")
 
     if path.suffix.lower() in {".mp4", ".webm"}:
-        return web.FileResponse(path=path)
+        resp = web.FileResponse(path=path)
+        _set_content_type(resp, path)
+        return resp
 
     kind = _classify_kind(path)
     if kind not in ("image",):
-        return web.FileResponse(path=_placeholder_png(kind, width, height))
+        placeholder = _placeholder_png(kind, width, height)
+        if placeholder is None:
+            raise web.HTTPInternalServerError(text="Failed to generate placeholder")
+        resp = web.FileResponse(path=placeholder)
+        _set_content_type(resp, placeholder)
+        return resp
 
     stat = path.stat()
     cache_key = build_thumb_cache_key(relpath, int(stat.st_mtime), stat.st_size, width, height)
     cache_path = thumb_cache_dir() / f"{cache_key}.png"
 
     if cache_path.exists():
-        return web.FileResponse(path=cache_path)
+        resp = web.FileResponse(path=cache_path)
+        _set_content_type(resp, cache_path)
+        return resp
 
     try:
-        with Image.open(path) as image:
-            image.thumbnail((width, height))
-            image.save(cache_path, format="PNG")
-    except OSError:
-        return web.FileResponse(path=_placeholder_png("other", width, height))
+        await _generate_thumbnail(path, width, height, cache_path)
+    except (OSError, asyncio.TimeoutError):
+        placeholder = _placeholder_png("other", width, height)
+        if placeholder is None:
+            raise web.HTTPInternalServerError(text="Failed to generate placeholder")
+        resp = web.FileResponse(path=placeholder)
+        _set_content_type(resp, placeholder)
+        return resp
 
-    return web.FileResponse(path=cache_path)
+    resp = web.FileResponse(path=cache_path)
+    _set_content_type(resp, cache_path)
+    return resp
 
 
 @PromptServer.instance.routes.post("/assets_plus/thumb/clear")
@@ -548,10 +605,12 @@ def delete_assets(
     mode: str,
     hidden_prefix: str = "",
     thumbnail_sizes: tuple[tuple[int, int], ...] = ((256, 256), (512, 512)),
-) -> tuple[list[str], list[str]]:
-    hidden = load_hidden()
+) -> tuple[list[str], list[str], dict[str, str]]:
+    """Delete assets. Returns (removed, failed, actual_modes)."""
     removed: list[str] = []
     failed: list[str] = []
+    actual_modes: dict[str, str] = {}
+    hidden_updates: dict[str, HiddenEntry] = {}
 
     for relpath in relpaths:
         try:
@@ -566,7 +625,7 @@ def delete_assets(
         remove_thumb_cache_entries(relpath, int(stat.st_mtime), stat.st_size, thumbnail_sizes)
         if mode == "hide":
             hidden_key = f"{hidden_prefix}{relpath}" if hidden_prefix else relpath
-            hidden[hidden_key] = HiddenEntry(
+            hidden_updates[hidden_key] = HiddenEntry(
                 relpath=hidden_key,
                 mtime=int(stat.st_mtime),
                 size=stat.st_size,
@@ -576,15 +635,21 @@ def delete_assets(
         try:
             if mode == "trash" and SEND2TRASH_AVAILABLE:
                 send2trash.send2trash(str(path))
+                actual_modes[relpath] = "trash"
             else:
                 path.unlink()
+                actual_modes[relpath] = "deleted_permanently" if mode == "trash" else mode
             removed.append(relpath)
+        except PermissionError:
+            LOGGER.warning("[Assets+ Explorer] Permission denied for %s", relpath)
+            failed.append(relpath)
         except OSError:
             LOGGER.exception("Failed to remove asset %s", relpath)
             failed.append(relpath)
 
-    save_hidden(hidden)
-    return removed, failed
+    if mode == "hide" and hidden_updates:
+        update_hidden(lambda h: {**h, **hidden_updates})
+    return removed, failed, actual_modes
 
 
 @PromptServer.instance.routes.post("/assets_plus/output/delete")
@@ -596,9 +661,9 @@ async def output_delete(request: web.Request) -> web.Response:
     if not isinstance(relpaths, list):
         raise web.HTTPBadRequest(text="relpaths must be a list")
 
-    removed, failed = delete_assets(get_output_directory(), relpaths, mode)
+    removed, failed, actual_modes = delete_assets(get_output_directory(), relpaths, mode)
     LOGGER.info("Assets+ delete mode=%s removed=%s failed=%s", mode, removed, failed)
-    return web.json_response({"removed": removed, "failed": failed, "mode": mode})
+    return web.json_response({"removed": removed, "failed": failed, "mode": mode, "actual_modes": actual_modes})
 
 
 @PromptServer.instance.routes.post("/assets_plus/input/delete")
@@ -610,9 +675,9 @@ async def input_delete(request: web.Request) -> web.Response:
     if not isinstance(relpaths, list):
         raise web.HTTPBadRequest(text="relpaths must be a list")
 
-    removed, failed = delete_assets(get_input_directory(), relpaths, mode, hidden_prefix="input/")
+    removed, failed, actual_modes = delete_assets(get_input_directory(), relpaths, mode, hidden_prefix="input/")
     LOGGER.info("Assets+ input delete mode=%s removed=%s failed=%s", mode, removed, failed)
-    return web.json_response({"removed": removed, "failed": failed, "mode": mode})
+    return web.json_response({"removed": removed, "failed": failed, "mode": mode, "actual_modes": actual_modes})
 
 
 @PromptServer.instance.routes.get("/assets_plus/i18n")
