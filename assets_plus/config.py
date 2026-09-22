@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,10 @@ THUMBNAIL_QUALITY_SIZES: dict[str, tuple[int, int]] = {
     "high": (512, 512),
 }
 DEFAULT_THUMBNAIL_QUALITY = "low"
+
+_config_cache: AssetsPlusConfig | None = None
+_config_cache_ts: float = 0.0
+CONFIG_CACHE_TTL: float = 15.0
 
 LOGGER = logging.getLogger("assets_plus")
 
@@ -88,15 +93,27 @@ def _coerce_scan_depth(value: Any) -> int | None:
 
 
 def load_config() -> AssetsPlusConfig:
+    global _config_cache, _config_cache_ts
+
+    now = time.monotonic()
+    if _config_cache is not None and now - _config_cache_ts < CONFIG_CACHE_TTL:
+        return _config_cache
+
     path = config_path()
     if not path.exists():
+        _config_cache = DEFAULT_CONFIG
+        _config_cache_ts = now
         return DEFAULT_CONFIG
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         LOGGER.warning("Assets+ config.json is invalid; using defaults.")
+        _config_cache = DEFAULT_CONFIG
+        _config_cache_ts = now
         return DEFAULT_CONFIG
     if not isinstance(raw, dict):
+        _config_cache = DEFAULT_CONFIG
+        _config_cache_ts = now
         return DEFAULT_CONFIG
 
     allowed_extensions = raw.get("allowed_extensions", DEFAULT_CONFIG.allowed_extensions)
@@ -130,7 +147,7 @@ def load_config() -> AssetsPlusConfig:
 
     scan_depth = _coerce_scan_depth(raw.get("scan_depth", DEFAULT_CONFIG.scan_depth))
 
-    return AssetsPlusConfig(
+    config = AssetsPlusConfig(
         allowed_extensions=allowed_extensions,
         thumbnail_quality=thumbnail_quality,
         list_limit=list_limit,
@@ -138,3 +155,6 @@ def load_config() -> AssetsPlusConfig:
         default_delete_mode=default_delete_mode,
         scan_depth=scan_depth,
     )
+    _config_cache = config
+    _config_cache_ts = now
+    return config

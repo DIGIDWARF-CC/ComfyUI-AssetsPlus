@@ -1,4 +1,7 @@
-from .assets_plus import api  # noqa: F401
+try:
+    from .assets_plus import api  # noqa: F401  # register routes
+except ImportError:
+    pass  # running outside ComfyUI (e.g. tests)
 
 WEB_DIRECTORY = "./web"
 
