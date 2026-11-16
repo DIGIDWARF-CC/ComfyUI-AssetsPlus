@@ -17,6 +17,8 @@ export const THUMB_QUALITY_SIZES = {
 };
 export const DEFAULT_DELETE_MODE = "trash";
 export const DEFAULT_CONFIRM_DELETE = true;
+export const DEFAULT_CONFIRM_DELETE_STARRED = true;
+export const DEFAULT_STARRED_FIRST = false;
 export const DEFAULT_SHOW_OVERLAY_HELP = true;
 export const DEFAULT_KEEP_OVERLAY_OPEN_ON_WORKFLOW = false;
 export const DEFAULT_LANGUAGE = "en";
@@ -32,6 +34,8 @@ export const OVERLAY_COMMANDS = {
   last: "AssetsPlus.OverlayNavigateLast",
   next: "AssetsPlus.OverlayNavigateNext",
   delete: "AssetsPlus.OverlayDelete",
+  star: "AssetsPlus.ToggleStar",
+  moveToInput: "AssetsPlus.MoveToImported",
 };
 
 export const OVERLAY_KEYBINDINGS = [
@@ -52,6 +56,14 @@ export const OVERLAY_KEYBINDINGS = [
     combo: { key: "x" },
   },
   {
+    commandId: OVERLAY_COMMANDS.star,
+    combo: { key: "q" },
+  },
+  {
+    commandId: OVERLAY_COMMANDS.moveToInput,
+    combo: { key: "e" },
+  },
+  {
     commandId: "Workspace.ToggleSidebarTab.assets-plus-explorer",
     combo: { key: "ArrowUp" },
   },
@@ -65,6 +77,8 @@ export const SETTINGS = {
   thumbnailQuality: "AssetsPlus.ThumbnailQuality",
   clearThumbnails: "AssetsPlus.ClearThumbnails",
   confirmDelete: "AssetsPlus.ConfirmDelete",
+  confirmDeleteStarred: "AssetsPlus.ConfirmDeleteStarred",
+  starredFirst: "AssetsPlus.StarredFirst",
   showOverlayHelp: "AssetsPlus.ShowOverlayHelp",
   keepOverlayOpenOnWorkflow: "AssetsPlus.KeepOverlayOpenOnWorkflow",
   language: "AssetsPlus.Language",

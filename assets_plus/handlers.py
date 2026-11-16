@@ -4,6 +4,7 @@ import asyncio
 import importlib.util
 import logging
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -12,9 +13,13 @@ from PIL import Image
 from server import PromptServer
 
 from .config import load_config, thumbnail_size_from_quality
-from .storage import HiddenEntry, load_hidden, thumb_cache_dir, update_hidden, evict_thumb_cache
+from .storage import (
+    HiddenEntry, load_hidden, thumb_cache_dir, update_hidden, evict_thumb_cache,
+    starred_key, update_starred,
+)
 from .paths import get_output_directory, get_input_directory, get_i18n_directory, resolve_relpath, load_translation_file, LANGUAGE_CODE_RE
-from .scanner import list_directory_items, _classify_kind, _placeholder_png
+from .scanner import list_directory_items, scan_files, _classify_kind, _placeholder_png
+from .marks import MarkScope, reconcile_marks
 from .metadata import read_metadata, build_thumb_cache_key, remove_thumb_cache_entries, clear_thumb_cache
 from .pagination import parse_cursor, encode_cursor, apply_cursor_filter, apply_since_filter
 
@@ -112,6 +117,11 @@ def delete_assets(
 
     if mode == "hide" and hidden_updates:
         update_hidden(lambda h: {**h, **hidden_updates})
+    elif removed:
+        # Files that are really gone (trash / permanent delete) lose their star.
+        scope = "input" if hidden_prefix == "input/" else "output"
+        gone = {starred_key(scope, relpath) for relpath in removed}
+        update_starred(lambda s: {key: entry for key, entry in s.items() if key not in gone})
     return removed, failed, actual_modes
 
 
@@ -151,12 +161,34 @@ def _build_list_response(base_dir: Path, hidden_prefix: str, params: dict[str, s
         except ValueError:
             since = None
 
-    hidden = load_hidden()
+    starred_first = params.get("starred_first", "0") in {"1", "true", "True"}
+    scope_name = "input" if hidden_prefix == "input/" else "output"
+
+    files = scan_files(base_dir, extensions, recursive, scan_depth)
+    scanned = {relpath: (mtime, size) for relpath, _, mtime, size in files}
+    hidden_scope = MarkScope(
+        base_dir, prefix=hidden_prefix, other_prefix=None if hidden_prefix else "input/"
+    )
+    starred_scope = MarkScope(base_dir, prefix=f"{scope_name}/")
+    hidden = update_hidden(
+        lambda h: reconcile_marks(h, hidden_scope, scanned, strict=True)
+    )
+    starred_entries = update_starred(
+        lambda s: reconcile_marks(s, starred_scope, scanned, strict=False)
+    )
+    starred = {
+        starred_scope.relpath_of(key) for key in starred_entries if starred_scope.owns(key)
+    }
+
     items = list_directory_items(
         base_dir, extensions, recursive, scan_depth,
         hidden=hidden, hidden_prefix=hidden_prefix, query=query,
+        files=files, starred=starred,
     )
     latest_mtime = items[0]["mtime"] if items else 0
+
+    if starred_first:
+        items.sort(key=lambda item: not item["starred"])  # stable: newest-first kept inside each group
 
     if since is not None:
         items = apply_since_filter(items, since)
@@ -168,7 +200,9 @@ def _build_list_response(base_dir: Path, hidden_prefix: str, params: dict[str, s
         has_more = len(items) > limit
         items = items[:limit]
 
-    next_cursor = encode_cursor(items[-1]) if items else params.get("cursor") or ""
+    next_cursor = (
+        encode_cursor(items[-1], starred_first) if items else params.get("cursor") or ""
+    )
 
     return {
         "items": items,
@@ -374,6 +408,185 @@ async def input_delete(request: web.Request) -> web.Response:
     removed, failed, actual_modes = delete_assets(get_input_directory(), relpaths, mode, hidden_prefix="input/")
     LOGGER.info("Assets+ input delete mode=%s removed=%s failed=%s", mode, removed, failed)
     return web.json_response({"removed": removed, "failed": failed, "mode": mode, "actual_modes": actual_modes})
+
+
+def set_starred_assets(
+    base_dir: Path,
+    scope: str,
+    relpaths: list[Any],
+    starred: bool,
+) -> tuple[list[str], list[str]]:
+    """Star or unstar assets. Returns (updated, failed) relpath lists."""
+    updated: list[str] = []
+    failed: list[str] = []
+    fingerprints: dict[str, tuple[int, int]] = {}
+
+    for relpath in relpaths:
+        if not isinstance(relpath, str) or not relpath:
+            continue
+        if not starred:
+            updated.append(relpath)  # unstarring never needs the file to exist
+            continue
+        try:
+            path = resolve_relpath(relpath, base_dir)
+            stat = path.stat()
+        except (web.HTTPError, OSError):
+            failed.append(relpath)
+            continue
+        if not path.is_file():
+            failed.append(relpath)
+            continue
+        fingerprints[relpath] = (int(stat.st_mtime), stat.st_size)
+        updated.append(relpath)
+
+    def apply(entries: dict[str, HiddenEntry]) -> dict[str, HiddenEntry]:
+        if starred:
+            for relpath, (mtime, size) in fingerprints.items():
+                key = starred_key(scope, relpath)
+                entries[key] = HiddenEntry(relpath=key, mtime=mtime, size=size)
+        else:
+            for relpath in updated:
+                entries.pop(starred_key(scope, relpath), None)
+        return entries
+
+    update_starred(apply)
+    return updated, failed
+
+
+async def _star_response(request: web.Request, base_dir: Path, scope: str) -> web.Response:
+    payload = await request.json()
+    relpaths = payload.get("relpaths", [])
+    if not isinstance(relpaths, list):
+        raise web.HTTPBadRequest(text="relpaths must be a list")
+    starred = bool(payload.get("starred", True))
+    updated, failed = set_starred_assets(base_dir, scope, relpaths, starred)
+    LOGGER.info("Assets+ %s star starred=%s updated=%s failed=%s", scope, starred, len(updated), len(failed))
+    return web.json_response({"updated": updated, "failed": failed, "starred": starred})
+
+
+@PromptServer.instance.routes.post("/assets_plus/output/star")
+async def output_star(request: web.Request) -> web.Response:
+    return await _star_response(request, get_output_directory(), "output")
+
+
+@PromptServer.instance.routes.post("/assets_plus/input/star")
+async def input_star(request: web.Request) -> web.Response:
+    return await _star_response(request, get_input_directory(), "input")
+
+
+def _unique_destination(directory: Path, filename: str) -> Path:
+    """First free path for *filename* in *directory*: name.ext, name_1.ext, name_2.ext, ..."""
+    candidate = directory / filename
+    stem, suffix = os.path.splitext(filename)
+    counter = 0
+    while candidate.exists():
+        counter += 1
+        candidate = directory / f"{stem}_{counter}{suffix}"
+    return candidate
+
+
+def _move_file(source: Path, destination: Path) -> None:
+    """Move without ever overwriting; falls back to copy+verify+delete across volumes."""
+    try:
+        # A hard link fails with FileExistsError instead of overwriting (unlike os.rename on POSIX).
+        os.link(source, destination)
+    except FileExistsError:
+        raise
+    except OSError:
+        pass  # different volume or no hard-link support: copy below
+    else:
+        try:
+            source.unlink()
+        except OSError:
+            destination.unlink(missing_ok=True)
+            raise
+        return
+    partial = destination.with_name(f".{destination.name}.part")
+    try:
+        shutil.copy2(source, partial)
+        if partial.stat().st_size != source.stat().st_size:
+            raise OSError("copy size mismatch")
+        if destination.exists():
+            raise FileExistsError(str(destination))
+        os.replace(partial, destination)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+    source.unlink()
+
+
+def move_assets_to_input(
+    output_dir: Path,
+    input_dir: Path,
+    relpaths: list[Any],
+    thumbnail_sizes: tuple[tuple[int, int], ...] = ((256, 256), (512, 512)),
+) -> tuple[list[dict[str, str]], list[str]]:
+    """Turn generated results into inputs: move files from output into the input root.
+
+    Name clashes get a numeric suffix instead of overwriting. Returns
+    (moved, failed) where moved items are {"from": <output relpath>, "to": <input relpath>}.
+    """
+    moved: list[dict[str, str]] = []
+    failed: list[str] = []
+    transfers: list[tuple[str, str, int, int]] = []  # (from, to, mtime, size)
+
+    for relpath in relpaths:
+        if not isinstance(relpath, str) or not relpath:
+            continue
+        try:
+            source = resolve_relpath(relpath, output_dir)
+            stat = source.stat()
+        except (web.HTTPError, OSError):
+            failed.append(relpath)
+            continue
+        if not source.is_file():
+            failed.append(relpath)
+            continue
+        placed = False
+        for _ in range(100):  # a concurrent writer can take the name between check and move
+            destination = _unique_destination(input_dir, source.name)
+            try:
+                _move_file(source, destination)
+            except FileExistsError:
+                continue
+            except OSError:
+                LOGGER.exception("Failed to move asset %s to input", relpath)
+                break
+            placed = True
+            break
+        if not placed:
+            failed.append(relpath)
+            continue
+        remove_thumb_cache_entries(relpath, int(stat.st_mtime), stat.st_size, thumbnail_sizes)
+        moved.append({"from": relpath, "to": destination.name})
+        transfers.append((relpath, destination.name, int(stat.st_mtime), stat.st_size))
+
+    if transfers:
+        gone_hidden = {relpath for relpath, _, _, _ in transfers}
+
+        def move_starred(entries: dict[str, HiddenEntry]) -> dict[str, HiddenEntry]:
+            for old_relpath, new_relpath, mtime, size in transfers:
+                if entries.pop(starred_key("output", old_relpath), None) is not None:
+                    new_key = starred_key("input", new_relpath)
+                    entries[new_key] = HiddenEntry(relpath=new_key, mtime=mtime, size=size)
+            return entries
+
+        update_starred(move_starred)
+        update_hidden(lambda h: {k: v for k, v in h.items() if k not in gone_hidden})
+    return moved, failed
+
+
+@PromptServer.instance.routes.post("/assets_plus/output/move_to_input")
+async def output_move_to_input(request: web.Request) -> web.Response:
+    payload = await request.json()
+    relpaths = payload.get("relpaths", [])
+    if not isinstance(relpaths, list):
+        raise web.HTTPBadRequest(text="relpaths must be a list")
+    moved, failed = await asyncio.to_thread(
+        move_assets_to_input, get_output_directory(), get_input_directory(), relpaths
+    )
+    LOGGER.info("Assets+ move to input moved=%s failed=%s", len(moved), len(failed))
+    return web.json_response({"moved": moved, "failed": failed})
 
 
 @PromptServer.instance.routes.get("/assets_plus/i18n")

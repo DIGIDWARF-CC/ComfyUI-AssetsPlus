@@ -64,6 +64,16 @@ def _iter_files(
     yield from _scan(base_dir)
 
 
+def scan_files(
+    base_dir: Path,
+    extensions: tuple[str, ...],
+    recursive: bool,
+    scan_depth: int | None,
+) -> list[tuple[str, Path, int, int]]:
+    """Walk the gallery once and return (relpath, path, mtime, size) tuples."""
+    return list(_iter_files(base_dir, extensions, recursive, scan_depth))
+
+
 def list_directory_items(
     base_dir: Path,
     extensions: tuple[str, ...],
@@ -72,12 +82,17 @@ def list_directory_items(
     hidden: dict[str, HiddenEntry] | None = None,
     hidden_prefix: str = "",
     query: str | None = None,
+    files: list[tuple[str, Path, int, int]] | None = None,
+    starred: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     hidden = hidden or {}
+    starred = starred or set()
     query_normalized = query.strip().lower() if query else ""
     items: list[dict[str, Any]] = []
+    if files is None:
+        files = scan_files(base_dir, extensions, recursive, scan_depth)
 
-    for relpath, path, mtime, size in _iter_files(base_dir, extensions, recursive, scan_depth):
+    for relpath, path, mtime, size in files:
         if query_normalized:
             haystack = f"{path.name} {relpath}".lower()
             if query_normalized not in haystack:
@@ -97,6 +112,7 @@ def list_directory_items(
             "size": size,
             "type": file_type,
             "has_workflow": has_wf,
+            "starred": relpath in starred,
         })
 
     items.sort(key=lambda item: (-item["mtime"], item["relpath"]))

@@ -1,11 +1,14 @@
 import { SETTINGS, SETTINGS_CATEGORY, THUMB_QUALITY_SIZES,
          DEFAULT_LIST_LIMIT, DEFAULT_THUMB_QUALITY, DEFAULT_DELETE_MODE,
-         DEFAULT_CONFIRM_DELETE, DEFAULT_SHOW_OVERLAY_HELP,
+         DEFAULT_CONFIRM_DELETE, DEFAULT_CONFIRM_DELETE_STARRED, DEFAULT_STARRED_FIRST,
+         DEFAULT_SHOW_OVERLAY_HELP,
          DEFAULT_KEEP_OVERLAY_OPEN_ON_WORKFLOW, DEFAULT_LANGUAGE,
          applySettingsCategory } from './constants.js';
 import { createSettingsButtonRenderer, resolveThumbnailQuality } from './utils.js';
 
-const buildSettingsSchema = (t, languageOptions, handleLanguageChange, handleClearThumbnails) => {
+const buildSettingsSchema = (
+  t, languageOptions, handleLanguageChange, handleClearThumbnails, handleStarredFirstChange
+) => {
   const settingsGroup = t("settings.group");
   const withCategory = (setting) => applySettingsCategory(setting, settingsGroup);
   return [
@@ -45,6 +48,23 @@ const buildSettingsSchema = (t, languageOptions, handleLanguageChange, handleCle
       name: t("settings.confirm_delete"),
       type: "boolean",
       defaultValue: DEFAULT_CONFIRM_DELETE,
+    }),
+    withCategory({
+      id: SETTINGS.confirmDeleteStarred,
+      name: t("settings.confirm_delete_starred"),
+      type: "boolean",
+      defaultValue: DEFAULT_CONFIRM_DELETE_STARRED,
+    }),
+    withCategory({
+      id: SETTINGS.starredFirst,
+      name: t("settings.starred_first"),
+      type: "boolean",
+      defaultValue: DEFAULT_STARRED_FIRST,
+      onChange: (newValue, oldValue) => {
+        if (typeof handleStarredFirstChange === "function") {
+          handleStarredFirstChange(newValue, oldValue);
+        }
+      },
     }),
     withCategory({
       id: SETTINGS.showOverlayHelp,
