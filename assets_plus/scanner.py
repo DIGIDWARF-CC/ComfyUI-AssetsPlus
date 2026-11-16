@@ -8,7 +8,7 @@ from PIL import Image
 from PIL import ImageDraw
 
 from .storage import HiddenEntry, thumb_cache_dir
-from .metadata import read_workflow_metadata
+from .metadata import has_workflow
 from .paths import allowed_extension
 
 
@@ -104,7 +104,7 @@ def list_directory_items(
         file_type = _classify_kind(path)
         has_wf = False
         if file_type == "image":
-            has_wf, _ = read_workflow_metadata(path)
+            has_wf = has_workflow(path, mtime, size)
         items.append({
             "relpath": relpath,
             "filename": path.name,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -34,15 +35,22 @@ def load_hidden() -> dict[str, HiddenEntry]:
         return {}
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(raw, dict):
         return {}
     entries: dict[str, HiddenEntry] = {}
     for relpath, payload in raw.items():
         if not isinstance(payload, dict):
             continue
-        mtime = int(payload.get("mtime", 0))
-        size = int(payload.get("size", 0))
-        entries[relpath] = HiddenEntry(relpath=relpath, mtime=mtime, size=size)
+        try:
+            entries[relpath] = HiddenEntry(
+                relpath=relpath,
+                mtime=int(payload.get("mtime", 0)),
+                size=int(payload.get("size", 0)),
+            )
+        except (TypeError, ValueError):
+            continue
     return entries
 
 
@@ -159,6 +167,9 @@ def thumb_cache_dir() -> Path:
 
 
 MAX_CACHE_SIZE_MB = 500
+EVICTION_INTERVAL_SECONDS = 60.0
+_eviction_lock = threading.Lock()
+_last_eviction = float("-inf")
 
 
 def evict_thumb_cache() -> int:
@@ -166,19 +177,30 @@ def evict_thumb_cache() -> int:
 
     Returns the number of files removed.
     """
-    cache_dir = thumb_cache_dir()
-    entries = sorted(
-        cache_dir.iterdir(),
-        key=lambda p: p.stat().st_mtime,  # oldest first
-    )
-    total_size = sum(p.stat().st_size for p in entries)
+    global _last_eviction
+    now = time.monotonic()
+    with _eviction_lock:
+        # Scanning the whole cache after every new thumbnail is O(n) per tile; once a
+        # minute is enough for a 500 MB budget.
+        if now - _last_eviction < EVICTION_INTERVAL_SECONDS:
+            return 0
+        _last_eviction = now
+
+    stats: list[tuple[float, int, Path]] = []
+    for entry in thumb_cache_dir().iterdir():
+        try:
+            info = entry.stat()
+        except OSError:  # removed by a concurrent request
+            continue
+        stats.append((info.st_mtime, info.st_size, entry))
+    stats.sort(key=lambda item: item[0])  # oldest first
+    total_size = sum(size for _, size, _ in stats)
     max_bytes = MAX_CACHE_SIZE_MB * 1024 * 1024
     removed = 0
-    for entry in entries:
+    for _, size, entry in stats:
         if total_size <= max_bytes:
             break
         try:
-            size = entry.stat().st_size
             entry.unlink()
             total_size -= size
             removed += 1

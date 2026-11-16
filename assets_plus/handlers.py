@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import logging
 import os
 import shutil
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -21,13 +21,11 @@ from .paths import get_output_directory, get_input_directory, get_i18n_directory
 from .scanner import list_directory_items, scan_files, _classify_kind, _placeholder_png
 from .marks import MarkScope, reconcile_marks
 from .metadata import read_metadata, build_thumb_cache_key, remove_thumb_cache_entries, clear_thumb_cache
+from .trash import move_to_trash
 from .pagination import parse_cursor, encode_cursor, apply_cursor_filter, apply_since_filter
 
-SEND2TRASH_AVAILABLE = importlib.util.find_spec("send2trash") is not None
-if SEND2TRASH_AVAILABLE:
-    import send2trash
-
 LOGGER = logging.getLogger("assets_plus")
+DELETE_MODES = frozenset({"trash", "delete", "hide"})
 
 
 def _set_content_type(response: web.StreamResponse, path: Path) -> None:
@@ -60,11 +58,75 @@ def _set_content_type(response: web.StreamResponse, path: Path) -> None:
 async def _generate_thumbnail(path: Path, width: int, height: int, cache_path: Path) -> None:
     """Generate thumbnail in thread pool with timeout."""
     def _sync_thumb() -> None:
-        with Image.open(path) as image:
-            image.thumbnail((width, height))
-            image.save(cache_path, format="PNG")
-            evict_thumb_cache()
+        # Write to a temp file and publish it atomically: a failed or concurrent save must
+        # never leave a truncated PNG at cache_path (it would be served forever).
+        tmp_path = cache_path.with_name(f".{cache_path.name}.{threading.get_ident()}.tmp")
+        try:
+            with Image.open(path) as image:
+                image.thumbnail((width, height))
+                image.save(tmp_path, format="PNG")
+            os.replace(tmp_path, cache_path)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+        evict_thumb_cache()
     await asyncio.wait_for(asyncio.to_thread(_sync_thumb), timeout=30.0)
+
+
+def _int_param(params: Any, name: str, default: int, minimum: int = 1, maximum: int | None = None) -> int:
+    """Read an integer query parameter; invalid or out-of-range values fall back to *default*."""
+    try:
+        value = int(params.get(name, default))
+    except (TypeError, ValueError):
+        return default
+    if value < minimum or (maximum is not None and value > maximum):
+        return default
+    return value
+
+
+async def _thumb_response(request: web.Request, base_dir: Path) -> web.StreamResponse:
+    """Shared body of the output/input thumbnail endpoints."""
+    config = load_config()
+    params = request.rel_url.query
+    relpath = params.get("relpath")
+    if not relpath:
+        raise web.HTTPBadRequest(text="relpath is required")
+    default_width, default_height = thumbnail_size_from_quality(config.thumbnail_quality)
+    width = _int_param(params, "w", default_width, maximum=2048)
+    height = _int_param(params, "h", default_height, maximum=2048)
+    path = resolve_relpath(relpath, base_dir)
+    if not path.is_file():
+        raise web.HTTPNotFound(text="Asset not found")
+
+    def respond(file_path: Path) -> web.StreamResponse:
+        resp = web.FileResponse(path=file_path)
+        _set_content_type(resp, file_path)
+        return resp
+
+    if path.suffix.lower() in {".mp4", ".webm"}:
+        return respond(path)
+
+    def placeholder_response(label: str) -> web.StreamResponse:
+        placeholder = _placeholder_png(label, width, height)
+        if placeholder is None:
+            raise web.HTTPInternalServerError(text="Failed to generate placeholder")
+        return respond(placeholder)
+
+    kind = _classify_kind(path)
+    if kind != "image":
+        return placeholder_response(kind)
+
+    stat = path.stat()
+    cache_key = build_thumb_cache_key(relpath, int(stat.st_mtime), stat.st_size, width, height)
+    cache_path = thumb_cache_dir() / f"{cache_key}.png"
+    if cache_path.exists():
+        return respond(cache_path)
+
+    try:
+        await _generate_thumbnail(path, width, height, cache_path)
+    except Exception:  # unreadable/huge/odd-mode image or timeout: show a placeholder tile
+        LOGGER.warning("[Assets+ Explorer] Thumbnail failed for %s", relpath, exc_info=True)
+        return placeholder_response("other")
+    return respond(cache_path)
 
 
 def delete_assets(
@@ -81,12 +143,14 @@ def delete_assets(
     hidden_updates: dict[str, HiddenEntry] = {}
 
     for relpath in relpaths:
+        if not isinstance(relpath, str) or not relpath:
+            continue
         try:
             path = resolve_relpath(relpath, base_dir)
-        except web.HTTPError:
+        except (web.HTTPError, ValueError):
             failed.append(relpath)
             continue
-        if not path.exists():
+        if not path.is_file():  # never trash/unlink a directory through this API
             failed.append(relpath)
             continue
         stat = path.stat()
@@ -101,12 +165,13 @@ def delete_assets(
             removed.append(relpath)
             continue
         try:
-            if mode == "trash" and SEND2TRASH_AVAILABLE:
-                send2trash.send2trash(str(path))
+            if mode == "trash":
+                # Never falls back to a permanent delete: on failure the file stays in place.
+                move_to_trash(path)
                 actual_modes[relpath] = "trash"
             else:
                 path.unlink()
-                actual_modes[relpath] = "deleted_permanently" if mode == "trash" else mode
+                actual_modes[relpath] = mode
             removed.append(relpath)
         except PermissionError:
             LOGGER.warning("[Assets+ Explorer] Permission denied for %s", relpath)
@@ -150,7 +215,7 @@ def _build_list_response(base_dir: Path, hidden_prefix: str, params: dict[str, s
         scan_depth = None
 
     recursive = params.get("recursive", "1") not in {"0", "false", "False"}
-    limit = int(params.get("limit", config.list_limit))
+    limit = _int_param(params, "limit", config.list_limit, minimum=0)
     cursor = parse_cursor(params.get("cursor"))
     query = params.get("query") or params.get("q")
     since_param = params.get("since")
@@ -247,106 +312,12 @@ async def assets_plus_config(_: web.Request) -> web.Response:
 
 @PromptServer.instance.routes.get("/assets_plus/output/thumb")
 async def output_thumb(request: web.Request) -> web.StreamResponse:
-    config = load_config()
-    params = request.rel_url.query
-    relpath = params.get("relpath")
-    if not relpath:
-        raise web.HTTPBadRequest(text="relpath is required")
-    default_width, default_height = thumbnail_size_from_quality(config.thumbnail_quality)
-    width = int(params.get("w", default_width))
-    height = int(params.get("h", default_height))
-    path = resolve_relpath(relpath, get_output_directory())
-    if not path.exists():
-        raise web.HTTPNotFound(text="Asset not found")
-
-    if path.suffix.lower() in {".mp4", ".webm"}:
-        resp = web.FileResponse(path=path)
-        _set_content_type(resp, path)
-        return resp
-
-    kind = _classify_kind(path)
-    if kind not in ("image",):
-        placeholder = _placeholder_png(kind, width, height)
-        if placeholder is None:
-            raise web.HTTPInternalServerError(text="Failed to generate placeholder")
-        resp = web.FileResponse(path=placeholder)
-        _set_content_type(resp, placeholder)
-        return resp
-
-    stat = path.stat()
-    cache_key = build_thumb_cache_key(relpath, int(stat.st_mtime), stat.st_size, width, height)
-    cache_path = thumb_cache_dir() / f"{cache_key}.png"
-
-    if cache_path.exists():
-        resp = web.FileResponse(path=cache_path)
-        _set_content_type(resp, cache_path)
-        return resp
-
-    try:
-        await _generate_thumbnail(path, width, height, cache_path)
-    except (OSError, asyncio.TimeoutError):
-        placeholder = _placeholder_png("other", width, height)
-        if placeholder is None:
-            raise web.HTTPInternalServerError(text="Failed to generate placeholder")
-        resp = web.FileResponse(path=placeholder)
-        _set_content_type(resp, placeholder)
-        return resp
-
-    resp = web.FileResponse(path=cache_path)
-    _set_content_type(resp, cache_path)
-    return resp
+    return await _thumb_response(request, get_output_directory())
 
 
 @PromptServer.instance.routes.get("/assets_plus/input/thumb")
 async def input_thumb(request: web.Request) -> web.StreamResponse:
-    config = load_config()
-    params = request.rel_url.query
-    relpath = params.get("relpath")
-    if not relpath:
-        raise web.HTTPBadRequest(text="relpath is required")
-    default_width, default_height = thumbnail_size_from_quality(config.thumbnail_quality)
-    width = int(params.get("w", default_width))
-    height = int(params.get("h", default_height))
-    path = resolve_relpath(relpath, get_input_directory())
-    if not path.exists():
-        raise web.HTTPNotFound(text="Asset not found")
-
-    if path.suffix.lower() in {".mp4", ".webm"}:
-        resp = web.FileResponse(path=path)
-        _set_content_type(resp, path)
-        return resp
-
-    kind = _classify_kind(path)
-    if kind not in ("image",):
-        placeholder = _placeholder_png(kind, width, height)
-        if placeholder is None:
-            raise web.HTTPInternalServerError(text="Failed to generate placeholder")
-        resp = web.FileResponse(path=placeholder)
-        _set_content_type(resp, placeholder)
-        return resp
-
-    stat = path.stat()
-    cache_key = build_thumb_cache_key(relpath, int(stat.st_mtime), stat.st_size, width, height)
-    cache_path = thumb_cache_dir() / f"{cache_key}.png"
-
-    if cache_path.exists():
-        resp = web.FileResponse(path=cache_path)
-        _set_content_type(resp, cache_path)
-        return resp
-
-    try:
-        await _generate_thumbnail(path, width, height, cache_path)
-    except (OSError, asyncio.TimeoutError):
-        placeholder = _placeholder_png("other", width, height)
-        if placeholder is None:
-            raise web.HTTPInternalServerError(text="Failed to generate placeholder")
-        resp = web.FileResponse(path=placeholder)
-        _set_content_type(resp, placeholder)
-        return resp
-
-    resp = web.FileResponse(path=cache_path)
-    _set_content_type(resp, cache_path)
-    return resp
+    return await _thumb_response(request, get_input_directory())
 
 
 @PromptServer.instance.routes.post("/assets_plus/thumb/clear")
@@ -390,6 +361,8 @@ async def output_delete(request: web.Request) -> web.Response:
     mode = payload.get("mode") or config.default_delete_mode
     if not isinstance(relpaths, list):
         raise web.HTTPBadRequest(text="relpaths must be a list")
+    if mode not in DELETE_MODES:
+        raise web.HTTPBadRequest(text="mode must be trash, delete or hide")
 
     removed, failed, actual_modes = delete_assets(get_output_directory(), relpaths, mode)
     LOGGER.info("Assets+ delete mode=%s removed=%s failed=%s", mode, removed, failed)
@@ -404,6 +377,8 @@ async def input_delete(request: web.Request) -> web.Response:
     mode = payload.get("mode") or config.default_delete_mode
     if not isinstance(relpaths, list):
         raise web.HTTPBadRequest(text="relpaths must be a list")
+    if mode not in DELETE_MODES:
+        raise web.HTTPBadRequest(text="mode must be trash, delete or hide")
 
     removed, failed, actual_modes = delete_assets(get_input_directory(), relpaths, mode, hidden_prefix="input/")
     LOGGER.info("Assets+ input delete mode=%s removed=%s failed=%s", mode, removed, failed)

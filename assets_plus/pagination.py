@@ -68,4 +68,6 @@ def apply_since_filter(
 ) -> list[dict[str, Any]]:
     if since is None:
         return items
-    return [item for item in items if item["mtime"] > since]
+    # mtime has one-second resolution: a file saved in the same second as the newest known
+    # one must still be reported, so the boundary is inclusive (clients de-duplicate).
+    return [item for item in items if item["mtime"] >= since]
