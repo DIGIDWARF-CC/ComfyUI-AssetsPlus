@@ -1,4 +1,4 @@
-# ComfyUI-AssetsPlus <img alt="Static Badge" src="https://img.shields.io/badge/OpenAI-Codex-gray?style=plastic&label=OpenAI&labelColor=0fa37f&color=gray"> <img alt="Static Badge" src="https://img.shields.io/badge/DeepSeek-gray?style=plastic&logo=DeepSeek&color=%23090D33">
+# ComfyUI-AssetsPlus <img alt="Anthropic Claude" src="https://img.shields.io/badge/Anthropic-Claude-gray?style=plastic&label=Anthropic&labelColor=d97757&color=gray&logo=claude&logoColor=white">
 <p align="center">
   <img src="/meta/img/logo_1024x700.png" alt="ai-generated assets-plus logo" width="600"/>
 </p>
@@ -7,8 +7,8 @@ Assets+ is an extension for ComfyUI that adds the **Assets+ Explorer** sidebar p
 persistent overview of the output and input directories via the `/assets_plus` API.
 
 ## Disclaimer about AI usage
-* The base of this extension was written almost purely by OpenAI Codex.
-* [OpenCode](https://github.com/anomalyco/opencode) and [OhMyOpenagent](https://github.com/code-yeongyu/oh-my-openagent) environments were used harnessing powers of [DeepSeek V4 Flash Free](https://openrouter.ai/deepseek/deepseek-v4-flash:free)
+* The project was started with AI help: the base of this extension was written almost purely by OpenAI Codex, and some work was done with [DeepSeek V4 Flash Free](https://openrouter.ai/deepseek/deepseek-v4-flash:free) through the [OpenCode](https://github.com/anomalyco/opencode) and [OhMyOpenagent](https://github.com/code-yeongyu/oh-my-openagent) environments.
+* Today the project is fully maintained with [Anthropic Claude](https://www.anthropic.com/claude).
 * Please report any quirks or mishaps at Issues page.
 * Any PRs will be greatly appreciated, thank you!
 
@@ -17,8 +17,8 @@ persistent overview of the output and input directories via the `/assets_plus` A
 1. Clone the repository into ComfyUI’s `custom_nodes/` (you should end up with
    the folder `custom_nodes/ComfyUI-AssetsPlus/`).
 2. Restart ComfyUI.
-3. (Optional) To enable sending files to the trash bin, install the dependency:
-   `pip install send2trash`.
+3. (Optional) `send2trash` (`pip install send2trash`) is used for the trash bin when installed;
+   without it the extension uses its own native trash support (Windows, Linux, macOS).
 
 The frontend consists of 8 ES-modules in `custom_nodes/ComfyUI-AssetsPlus/web/` and is
 loaded automatically by ComfyUI.
@@ -91,8 +91,11 @@ Example:
 
 ## Deletion modes
 
-* **trash** — moves files to the trash bin via `send2trash` (if available). If the dependency
-  is not installed, regular deletion is used.
+* **trash** — moves files to the system trash bin: via `send2trash` when it is installed,
+  otherwise natively (Recycle Bin on Windows, the freedesktop.org trash on Linux, `~/.Trash` on
+  macOS). There is no fallback to permanent deletion in this mode: if a file cannot be trashed, it
+  stays in place and an error is shown. (Volumes without a Recycle Bin, e.g. some network
+  drives, are handled by the operating system and may delete immediately.)
 * **delete** — permanently deletes the file.
 * **hide** — hides the asset from the list while keeping the file on disk
   (the index is stored in `user/__assets_plus/hidden.json`). Entries for files that disappeared are
@@ -126,7 +129,7 @@ The extension structure matches Manager requirements:
 
 ## Notes
 
-* `send2trash` is used for moving to trash (if available).
+* Trash support lives in `assets_plus/trash.py` (`send2trash` first, native implementation otherwise).
 * Hidden assets are stored in `user/__assets_plus/hidden.json` (input entries are namespaced).
 * Thumbnail cache: `user/__assets_plus/thumb_cache/`.
 * The thumbnail cache can be cleared from settings or via `POST /assets_plus/thumb/clear`.

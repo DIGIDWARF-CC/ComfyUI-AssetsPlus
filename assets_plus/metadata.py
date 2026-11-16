@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import time
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -12,44 +13,52 @@ from .storage import thumb_cache_dir
 
 LOGGER = logging.getLogger("assets_plus")
 
-_metadata_cache: dict[str, tuple[float, bool, dict[str, Any]]] = {}
-METADATA_CACHE_TTL = 5.0
+# Only the "has a workflow" flag is cached (the workflow JSON itself can be large and is
+# read on demand), keyed by (path, mtime, size) so a changed file is re-read.
+_workflow_flag_cache: OrderedDict[tuple[str, int, int], bool] = OrderedDict()
+WORKFLOW_FLAG_CACHE_MAX_ENTRIES = 50000
+_workflow_flag_lock = threading.Lock()
 
 
-def read_workflow_metadata(path: Path) -> tuple[bool, dict[str, Any]]:
-    """Read workflow metadata from an image file.
-
-    Returns (has_workflow, metadata_dict).
-    Results are cached in memory with TTL to avoid repeated disk I/O.
-    """
-    cache_key = str(path.resolve())
-    cached = _metadata_cache.get(cache_key)
-    if cached is not None:
-        cache_time, has_wf, metadata = cached
-        if time.monotonic() - cache_time < METADATA_CACHE_TTL:
-            return has_wf, metadata
-
+def _read_image_metadata(path: Path) -> dict[str, Any]:
     try:
         with Image.open(path) as image:
             info = image.info or {}
-    except OSError:
-        _metadata_cache[cache_key] = (time.monotonic(), False, {})
-        return False, {}
-
+    except Exception:  # unreadable, truncated or decompression-bomb image: no metadata, never fail a listing
+        return {}
     metadata: dict[str, Any] = {}
     for key in ("workflow", "prompt"):
         value = info.get(key)
         if value:
             metadata[key] = value
-    has_wf = bool(metadata)
-    _metadata_cache[cache_key] = (time.monotonic(), has_wf, metadata)
-    return has_wf, metadata
+    return metadata
+
+
+def read_workflow_metadata(path: Path) -> tuple[bool, dict[str, Any]]:
+    """Read workflow metadata from an image file. Returns (has_workflow, metadata_dict)."""
+    metadata = _read_image_metadata(path)
+    return bool(metadata), metadata
+
+
+def has_workflow(path: Path, mtime: int, size: int) -> bool:
+    """Cheap, cached check used by gallery listings (does not reopen unchanged images)."""
+    cache_key = (str(path), mtime, size)
+    with _workflow_flag_lock:
+        cached = _workflow_flag_cache.get(cache_key)
+        if cached is not None:
+            _workflow_flag_cache.move_to_end(cache_key)
+            return cached
+    flag = bool(_read_image_metadata(path))
+    with _workflow_flag_lock:
+        _workflow_flag_cache[cache_key] = flag
+        while len(_workflow_flag_cache) > WORKFLOW_FLAG_CACHE_MAX_ENTRIES:
+            _workflow_flag_cache.popitem(last=False)
+    return flag
 
 
 def read_metadata(path: Path) -> dict[str, Any]:
-    """Read metadata from an image file. Backward-compatible wrapper."""
-    _, metadata = read_workflow_metadata(path)
-    return metadata
+    """Read metadata from an image file."""
+    return _read_image_metadata(path)
 
 
 def build_thumb_cache_key(relpath: str, mtime: int, size: int, width: int, height: int) -> str:

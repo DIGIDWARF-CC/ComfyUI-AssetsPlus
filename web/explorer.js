@@ -655,6 +655,8 @@ export class AssetsPlusExplorer {
 
     try {
       const asset = JSON.parse(raw);
+      // There is no matching Load node for meshes; do not create a wrong (Load Image) one.
+      if (asset.type === "mesh") return;
 
       // Check if there's an existing media node under the cursor \u2192 replace.
       const hitNode = canvas?.graph?.getNodeOnPos(
@@ -697,10 +699,12 @@ export class AssetsPlusExplorer {
     const segments = asset.relpath.split("/");
     const filename = segments.pop();
     const subfolder = segments.join("/");
-    const valueStr = subfolder
-      ? `${subfolder}/${filename} [output]`
-      : `${filename} [output]`;
-    const resultItem = { filename, subfolder, type: "output" };
+    // Files from the Imported tab live in the input folder: Load nodes address those by
+    // the plain name, while generated files need the "[output]" annotation.
+    const fileType = asset.tab === INPUT_TAB ? "input" : "output";
+    const path = subfolder ? `${subfolder}/${filename}` : filename;
+    const valueStr = fileType === "output" ? `${path} [output]` : path;
+    const resultItem = { filename, subfolder, type: fileType };
 
     // Direct widget value set.
     const widgetNames = ["file", "image", "video", "audio"];
@@ -1571,7 +1575,10 @@ export class AssetsPlusExplorer {
     const params = this.buildListParams({ since });
     try {
       const payload = await fetchJson(`/assets_plus/${this.state.tab}/list?${params.toString()}`);
-      const items = payload.items || [];
+      // The server reports everything from the newest known second (inclusive, so files saved
+      // within the same second are not missed); only rebuild the grid for really new items.
+      const known = new Set(this.state.items.map((item) => item.relpath));
+      const items = (payload.items || []).filter((item) => !known.has(item.relpath));
       if (items.length) {
         this.mergeNewItems(items);
       }
@@ -1791,12 +1798,22 @@ export class AssetsPlusExplorer {
     if (!deleteEndpoint) return;
 
     try {
-      await fetchJson(deleteEndpoint, {
+      const payload = await fetchJson(deleteEndpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ relpaths: deleteRelpaths, mode }),
       });
-      this.removeItemsFromView(deleteRelpaths);
+      // Only drop what the server really removed; failed items stay visible.
+      const removed = Array.isArray(payload?.removed) ? payload.removed : deleteRelpaths;
+      if (removed.length) this.removeItemsFromView(removed);
+      if (deleteRelpaths.length > removed.length) {
+        this.toast({
+          severity: "error",
+          summary: t("toast.summary"),
+          detail: t("toast.delete_failed"),
+          life: 4000,
+        });
+      }
     } catch (error) {
       this.toast({
         severity: "error",
