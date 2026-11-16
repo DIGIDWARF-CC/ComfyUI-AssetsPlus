@@ -5,6 +5,7 @@ import {
   OUTPUT_TAB, INPUT_TAB, SETTINGS,
   DEFAULT_LIST_LIMIT, DEFAULT_THUMB_QUALITY,
   DEFAULT_DELETE_MODE, DEFAULT_CONFIRM_DELETE,
+  DEFAULT_CONFIRM_DELETE_STARRED, DEFAULT_STARRED_FIRST,
   DEFAULT_SHOW_OVERLAY_HELP, DEFAULT_KEEP_OVERLAY_OPEN_ON_WORKFLOW,
   THUMB_QUALITY_SIZES, VIDEO_THUMB_EXTENSIONS, DEFAULT_EXTENSIONS
 } from './constants.js';
@@ -13,7 +14,7 @@ import {
   buildThumbUrl, getFileExtension, normalizeWorkflow,
   workflowFilenameForAsset, resolveWorkflowStore,
   resolveWorkflowActionsService, resolveThumbnailQuality,
-  resolveThumbnailSize, createElement, createStyleTag
+  resolveThumbnailSize, createElement, createStyleTag, getSettingValue
 } from './utils.js';
 import { t } from './i18n.js';
 import { overlayAPI } from './overlay.js';
@@ -33,6 +34,7 @@ export class AssetsPlusExplorer {
       search: "",
       searchVisible: false,
       selected: new Set(),
+      selectionMode: false,
       config: null,
       cursor: "",
       hasMore: true,
@@ -123,10 +125,24 @@ export class AssetsPlusExplorer {
       attrs: { title: t("actions.search"), "aria-label": t("actions.search") },
     });
     searchToggle.innerHTML = '<i class="pi pi-search"></i>';
+    const selectModeButton = createElement("button", {
+      className: "assets-plus-action-button",
+      attrs: {
+        title: t("actions.selection_mode"),
+        "aria-label": t("actions.selection_mode"),
+        "aria-pressed": "false",
+      },
+    });
+    selectModeButton.innerHTML = '<i class="pi pi-check-circle"></i>';
     const selectAllButton = createElement("button", {
       className: "assets-plus-action-button",
       attrs: { title: t("actions.select_all"), "aria-label": t("actions.select_all") },
     });
+    const starSelectedButton = createElement("button", {
+      className: "assets-plus-action-button",
+      attrs: { title: t("actions.star_selected"), "aria-label": t("actions.star_selected") },
+    });
+    starSelectedButton.innerHTML = '<i class="pi pi-star"></i>';
     selectAllButton.innerHTML = '<i class="pi pi-check-square"></i>';
     const invertSelectionButton = createElement("button", {
       className: "assets-plus-action-button",
@@ -138,16 +154,27 @@ export class AssetsPlusExplorer {
       attrs: { title: t("actions.download"), "aria-label": t("actions.download") },
     });
     downloadButton.innerHTML = '<i class="pi pi-download"></i>';
+    const moveButton = createElement("button", {
+      className: "assets-plus-action-button",
+      attrs: {
+        title: t("actions.move_selected_to_input"),
+        "aria-label": t("actions.move_selected_to_input"),
+      },
+    });
+    moveButton.innerHTML = '<i class="pi pi-inbox"></i>';
     const deleteButton = createElement("button", {
       className: "assets-plus-action-button",
-      attrs: { title: t("actions.delete"), "aria-label": t("actions.delete") },
+      attrs: { title: t("actions.delete_selected"), "aria-label": t("actions.delete_selected") },
     });
     deleteButton.innerHTML = '<i class="pi pi-trash"></i>';
 
     actionsBar.appendChild(searchToggle);
+    actionsBar.appendChild(selectModeButton);
     actionsBar.appendChild(selectAllButton);
     actionsBar.appendChild(invertSelectionButton);
+    actionsBar.appendChild(starSelectedButton);
     actionsBar.appendChild(downloadButton);
+    actionsBar.appendChild(moveButton);
     actionsBar.appendChild(deleteButton);
 
     const searchInput = createElement("input", {
@@ -230,6 +257,17 @@ export class AssetsPlusExplorer {
       text: "\u00D7",
       attrs: { "aria-label": t("overlay.close") },
     });
+    const overlayStar = createElement("button", {
+      className: "assets-plus-icon-button assets-plus-overlay-star",
+    });
+    this.applyStarState(overlayStar, false);
+    const overlayMove = createElement("button", {
+      className: "assets-plus-icon-button",
+      attrs: { title: t("actions.move_to_input"), "aria-label": t("actions.move_to_input") },
+    });
+    overlayMove.innerHTML = '<i class="pi pi-inbox"></i>';
+    overlayTopActions.appendChild(overlayStar);
+    overlayTopActions.appendChild(overlayMove);
     overlayTopActions.appendChild(overlayPrint);
     overlayTopActions.appendChild(overlayCopy);
     overlayTopActions.appendChild(overlayDownload);
@@ -316,9 +354,25 @@ export class AssetsPlusExplorer {
     const hintDeleteIcon = createElement("i", { className: "pi pi-trash" });
     hintDelete.appendChild(hintDeleteKey);
     hintDelete.appendChild(hintDeleteIcon);
-    overlayHint.appendChild(createElement("span"));
+    const hintStar = createElement("button", {
+      className: "assets-plus-hint-button",
+      attrs: { "data-action": "star", title: t("actions.toggle_star") },
+    });
+    const hintStarKey = createElement("span", { className: "assets-plus-hint-key" });
+    const hintStarIcon = createElement("i", { className: "pi pi-star" });
+    hintStar.appendChild(hintStarKey);
+    hintStar.appendChild(hintStarIcon);
+    const hintMove = createElement("button", {
+      className: "assets-plus-hint-button",
+      attrs: { "data-action": "move", title: t("actions.move_to_input") },
+    });
+    const hintMoveKey = createElement("span", { className: "assets-plus-hint-key" });
+    const hintMoveIcon = createElement("i", { className: "pi pi-inbox" });
+    hintMove.appendChild(hintMoveKey);
+    hintMove.appendChild(hintMoveIcon);
+    overlayHint.appendChild(hintStar);
     overlayHint.appendChild(hintUp);
-    overlayHint.appendChild(createElement("span"));
+    overlayHint.appendChild(hintMove);
     overlayHint.appendChild(hintLeft);
     overlayHint.appendChild(hintDown);
     overlayHint.appendChild(hintRight);
@@ -340,8 +394,10 @@ export class AssetsPlusExplorer {
       inputTab,
       refreshButton,
       searchToggle,
+      selectModeButton,
       selectAllButton,
       invertSelectionButton,
+      starSelectedButton,
       searchInput,
       status,
       grid,
@@ -351,6 +407,7 @@ export class AssetsPlusExplorer {
       contextMenuReplace,
       actionsBar,
       downloadButton,
+      moveButton,
       deleteButton,
       overlay,
       overlayInfo,
@@ -365,6 +422,8 @@ export class AssetsPlusExplorer {
       overlayMedia,
       overlayImage,
       overlayVideo,
+      overlayStar,
+      overlayMove,
       overlayPrint,
       overlayCopy,
       overlayDownload,
@@ -377,6 +436,11 @@ export class AssetsPlusExplorer {
       hintDown,
       hintRight,
       hintDelete,
+      hintStar,
+      hintStarIcon,
+      hintStarKey,
+      hintMove,
+      hintMoveKey,
       hintUpKey,
       hintLeftKey,
       hintDownKey,
@@ -394,6 +458,8 @@ export class AssetsPlusExplorer {
     outputTab.addEventListener("click", () => this.setTab(OUTPUT_TAB));
     inputTab.addEventListener("click", () => this.setTab(INPUT_TAB));
     searchToggle.addEventListener("click", () => this.toggleSearchVisibility());
+    selectModeButton.addEventListener("click", () => this.setSelectionMode(!this.state.selectionMode));
+    starSelectedButton.addEventListener("click", () => this.toggleStarSelected());
     selectAllButton.addEventListener("click", () => this.selectAllFiltered());
     invertSelectionButton.addEventListener("click", () => this.invertSelection());
     searchInput.addEventListener("input", (event) => {
@@ -401,6 +467,7 @@ export class AssetsPlusExplorer {
     });
 
     downloadButton.addEventListener("click", () => this.handleDownload());
+    moveButton.addEventListener("click", () => this.moveToImported(this.getSelectedItems()));
     deleteButton.addEventListener("click", () => this.handleDelete());
     document.addEventListener("click", this.documentClickHandler);
     contextMenuOpen.addEventListener("click", (event) => {
@@ -415,6 +482,14 @@ export class AssetsPlusExplorer {
     overlayClose.addEventListener("click", () => this.closeOverlay());
     overlayPrev.addEventListener("click", () => this.navigateOverlay(-1));
     overlayNext.addEventListener("click", () => this.navigateOverlay(1));
+    overlayStar.addEventListener("click", () => {
+      const item = this.getOverlayItem();
+      if (item) this.setStarred([item], !item.starred);
+    });
+    overlayMove.addEventListener("click", () => {
+      const item = this.getOverlayItem();
+      if (item) this.moveToImported([item]);
+    });
     overlayPrint.addEventListener("click", () => this.handlePrintOverlayImage());
     overlayCopy.addEventListener("click", () => this.handleCopyOriginalToClipboard());
     overlayDownload.addEventListener("click", () => this.handleDownload(this.getOverlayItem()));
@@ -474,6 +549,10 @@ export class AssetsPlusExplorer {
       overlayReplaceWorkflow,
       overlayReset,
     } = this.elements;
+    if (this.state.overlay.relpath) this.updateOverlayActions(this.getOverlayItem());
+    this.elements.grid?.querySelectorAll(".assets-plus-card-star").forEach((button) => {
+      this.applyStarState(button, button.classList.contains("active"));
+    });
     if (title) title.textContent = t("app.title");
     if (outputTab) outputTab.textContent = t("tabs.output");
     if (inputTab) inputTab.textContent = t("tabs.input");
@@ -499,9 +578,22 @@ export class AssetsPlusExplorer {
       downloadButton.setAttribute("aria-label", t("actions.download"));
     }
     if (deleteButton) {
-      deleteButton.setAttribute("title", t("actions.delete"));
-      deleteButton.setAttribute("aria-label", t("actions.delete"));
+      deleteButton.setAttribute("title", t("actions.delete_selected"));
+      deleteButton.setAttribute("aria-label", t("actions.delete_selected"));
     }
+    if (this.elements.moveButton) {
+      this.elements.moveButton.setAttribute("title", t("actions.move_selected_to_input"));
+      this.elements.moveButton.setAttribute("aria-label", t("actions.move_selected_to_input"));
+    }
+    if (this.elements.overlayMove) {
+      this.elements.overlayMove.setAttribute("title", t("actions.move_to_input"));
+      this.elements.overlayMove.setAttribute("aria-label", t("actions.move_to_input"));
+    }
+    if (this.elements.selectModeButton) {
+      this.elements.selectModeButton.setAttribute("title", t("actions.selection_mode"));
+      this.elements.selectModeButton.setAttribute("aria-label", t("actions.selection_mode"));
+    }
+    this.updateActionsBar();
     if (contextMenuOpen) contextMenuOpen.textContent = t("actions.open_workflow_new_tab");
     if (contextMenuReplace) contextMenuReplace.textContent = t("actions.replace_workflow");
     if (overlayClose) overlayClose.setAttribute("aria-label", t("overlay.close"));
@@ -748,17 +840,7 @@ export class AssetsPlusExplorer {
   }
 
   getSetting(id, fallback) {
-    const sources = [
-      this.app?.settings?.get?.bind(this.app?.settings),
-      this.app?.ui?.settings?.get?.bind(this.app?.ui?.settings),
-    ].filter(Boolean);
-    for (const getter of sources) {
-      const value = getter(id);
-      if (value !== undefined && value !== null) {
-        return value;
-      }
-    }
-    return fallback;
+    return getSettingValue(this.app, id, fallback);
   }
 
   getSettingsSnapshot() {
@@ -789,6 +871,10 @@ export class AssetsPlusExplorer {
       confirmDelete: Boolean(
         this.getSetting(SETTINGS.confirmDelete, config.confirm_delete ?? DEFAULT_CONFIRM_DELETE)
       ),
+      confirmDeleteStarred: Boolean(
+        this.getSetting(SETTINGS.confirmDeleteStarred, DEFAULT_CONFIRM_DELETE_STARRED)
+      ),
+      starredFirst: Boolean(this.getSetting(SETTINGS.starredFirst, DEFAULT_STARRED_FIRST)),
       showOverlayHelp: Boolean(
         this.getSetting(SETTINGS.showOverlayHelp, DEFAULT_SHOW_OVERLAY_HELP)
       ),
@@ -815,6 +901,8 @@ export class AssetsPlusExplorer {
     this.rememberScrollPosition();
     this.state.tab = tab;
     this.state.selected = new Set();
+    // Switching tabs also leaves selection mode.
+    this.setSelectionMode(false);
     this.state.scrollPositions[tab] = 0;
     this.closeOverlay();
     this.updateTabs();
@@ -830,14 +918,16 @@ export class AssetsPlusExplorer {
 
   toggleSearchVisibility() {
     this.state.searchVisible = !this.state.searchVisible;
-    this.updateSearchVisibility();
+    this.updateSearchVisibility({ focus: true });
   }
 
-  updateSearchVisibility() {
+  updateSearchVisibility({ focus = false } = {}) {
     const { searchInput } = this.elements;
     if (!searchInput) return;
     searchInput.classList.toggle("visible", this.state.searchVisible);
-    if (this.state.searchVisible) {
+    // Only grab focus when the user opens the search box; this method also runs on every
+    // grid update and must not steal focus from hotkeys (Q, X, arrows, ...).
+    if (focus && this.state.searchVisible) {
       searchInput.focus();
     }
   }
@@ -998,21 +1088,64 @@ export class AssetsPlusExplorer {
 
   updateActionsBar() {
     const selectionCount = this.state.selected.size;
-    const { downloadButton, deleteButton, selectAllButton } = this.elements;
-    const hasSelection = selectionCount > 0;
+    const {
+      downloadButton,
+      moveButton,
+      deleteButton,
+      selectAllButton,
+      invertSelectionButton,
+      starSelectedButton,
+      selectModeButton,
+    } = this.elements;
+    const mode = this.state.selectionMode;
+    const hasSelection = mode && selectionCount > 0;
     const filteredCount = this.getFilteredItems().length;
     const allSelected = filteredCount > 0 && selectionCount >= filteredCount;
-    if (selectAllButton) {
-      selectAllButton.style.display = allSelected ? "none" : "inline-flex";
+    const show = (button, visible) => {
+      if (button) button.style.display = visible ? "inline-flex" : "none";
+    };
+    if (selectModeButton) {
+      selectModeButton.classList.toggle("active", mode);
+      selectModeButton.setAttribute("aria-pressed", mode ? "true" : "false");
     }
-    if (downloadButton) {
-      downloadButton.style.display = hasSelection ? "inline-flex" : "none";
-    }
-    if (deleteButton) {
-      deleteButton.style.display =
-        hasSelection && this.canDeleteCurrentTab() ? "inline-flex" : "none";
+    show(selectAllButton, mode && !allSelected && filteredCount > 0);
+    show(invertSelectionButton, mode && filteredCount > 0);
+    show(downloadButton, hasSelection);
+    show(moveButton, hasSelection && this.state.tab === OUTPUT_TAB);
+    show(deleteButton, hasSelection && this.canDeleteCurrentTab());
+    show(starSelectedButton, hasSelection && this.canDeleteCurrentTab());
+    if (starSelectedButton) {
+      const allStarred = hasSelection && this.getSelectedItems().every((item) => item.starred);
+      const label = t(allStarred ? "actions.unstar_selected" : "actions.star_selected");
+      starSelectedButton.setAttribute("title", label);
+      starSelectedButton.setAttribute("aria-label", label);
+      starSelectedButton.innerHTML = `<i class="pi ${allStarred ? "pi-star-fill" : "pi-star"}"></i>`;
+      starSelectedButton.classList.toggle("active", allStarred);
     }
     this.updateSearchVisibility();
+  }
+
+  setSelectionMode(enabled) {
+    const next = Boolean(enabled);
+    if (this.state.selectionMode === next) return;
+    this.state.selectionMode = next;
+    if (!next) this.state.selected = new Set();
+    this.closeContextMenu();
+    this.elements.root?.classList.toggle("assets-plus-selection-mode", next);
+    this.elements.grid?.querySelectorAll(".assets-plus-card").forEach((card) => {
+      card.draggable = !next;
+    });
+    this.applySelectionStyles();
+    this.updateActionsBar();
+  }
+
+  /** Star every selected item, or remove the stars when all of them are already starred. */
+  async toggleStarSelected() {
+    const items = this.getSelectedItems();
+    if (!items.length) return;
+    const allStarred = items.every((item) => item.starred);
+    await this.setStarred(items, !allStarred);
+    this.updateActionsBar();
   }
 
   applySelectionStyles() {
@@ -1020,8 +1153,6 @@ export class AssetsPlusExplorer {
       const relpath = card.getAttribute("data-relpath");
       const isSelected = this.state.selected.has(relpath);
       card.classList.toggle("selected", isSelected);
-      const checkbox = card.querySelector(".assets-plus-checkbox");
-      if (checkbox) checkbox.checked = isSelected;
     });
   }
 
@@ -1166,13 +1297,10 @@ export class AssetsPlusExplorer {
     const card = createElement("div", { className: "assets-plus-card" });
     card.setAttribute("data-relpath", item.relpath);
 
-    const checkbox = createElement("input", {
-      className: "assets-plus-checkbox",
-      attrs: { type: "checkbox", "aria-label": t("selection.checkbox_label") },
-    });
-    const isSelected = this.state.selected.has(item.relpath);
-    checkbox.checked = isSelected;
-    card.classList.toggle("selected", isSelected);
+    card.classList.toggle("selected", this.state.selected.has(item.relpath));
+    // Shown only in selection mode, on selected cards (see CSS).
+    const selectMark = createElement("div", { className: "assets-plus-select-mark" });
+    selectMark.innerHTML = '<i class="pi pi-check"></i>';
 
     const thumb = createElement("div", { className: "assets-plus-thumb" });
     const thumbUrl = buildThumbUrl(item.relpath, this.state.tab, thumbnailSize);
@@ -1196,10 +1324,23 @@ export class AssetsPlusExplorer {
       thumb.appendChild(image);
     }
 
-    card.appendChild(checkbox);
+    const starButton = createElement("button", { className: "assets-plus-card-star" });
+    this.applyStarState(starButton, Boolean(item.starred));
+    card.classList.toggle("starred", Boolean(item.starred));
+    starButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      this.setStarred([item], !item.starred);
+    });
+
     card.appendChild(thumb);
-    card.draggable = true;
+    card.appendChild(starButton);
+    card.appendChild(selectMark);
+    card.draggable = !this.state.selectionMode;
     card.addEventListener("dragstart", (event) => {
+      if (this.state.selectionMode) {
+        event.preventDefault();
+        return;
+      }
       // Store the asset payload so our own drop handler can pick it up.
       const payload = JSON.stringify({
         relpath: item.relpath,
@@ -1236,15 +1377,15 @@ export class AssetsPlusExplorer {
       });
     }
 
-    checkbox.addEventListener("change", (event) => {
-      this.setSelected(item.relpath, event.target.checked);
-    });
-
     card.addEventListener("click", (event) => {
-      if (event.target.closest(".assets-plus-checkbox")) {
+      if (this.state.selectionMode) {
+        this.setSelected(item.relpath, !this.state.selected.has(item.relpath));
         return;
       }
       if (event.target.closest(".assets-plus-card-menu")) {
+        return;
+      }
+      if (event.target.closest(".assets-plus-card-star")) {
         return;
       }
       this.closeContextMenu();
@@ -1314,6 +1455,9 @@ export class AssetsPlusExplorer {
     } else if (settings.recursive === false) {
       params.set("recursive", "0");
     }
+    if (settings.starredFirst) {
+      params.set("starred_first", "1");
+    }
     const query = this.state.search.trim();
     if (query) {
       params.set("query", query);
@@ -1332,12 +1476,22 @@ export class AssetsPlusExplorer {
     this.state.latestMtime = Math.max(this.state.latestMtime || 0, value);
   }
 
+  /** Newest first; starred items lead when "show starred first" is on. */
+  sortItems(items) {
+    const { starredFirst } = this.getSettingsSnapshot();
+    return items.sort(
+      (a, b) =>
+        (starredFirst ? Number(Boolean(b.starred)) - Number(Boolean(a.starred)) : 0) ||
+        b.mtime - a.mtime ||
+        a.relpath.localeCompare(b.relpath)
+    );
+  }
+
   mergeNewItems(items) {
     if (!items.length) return;
     const map = new Map(this.state.items.map((item) => [item.relpath, item]));
     items.forEach((item) => map.set(item.relpath, item));
-    const merged = Array.from(map.values());
-    merged.sort((a, b) => (b.mtime - a.mtime) || a.relpath.localeCompare(b.relpath));
+    const merged = this.sortItems(Array.from(map.values()));
     this.state.items = merged;
     const available = new Set(merged.map((item) => item.relpath));
     this.state.selected = new Set(
@@ -1349,10 +1503,13 @@ export class AssetsPlusExplorer {
   async loadPage({ reset = false } = {}) {
     const params = this.buildListParams({ cursor: reset ? "" : this.state.cursor });
     const payload = await fetchJson(`/assets_plus/${this.state.tab}/list?${params.toString()}`);
-    const items = payload.items || [];
+    let items = payload.items || [];
     if (reset) {
       this.state.items = items;
     } else {
+      // Starring/unstarring while paging can reorder items across the cursor; never show one twice.
+      const known = new Set(this.state.items.map((item) => item.relpath));
+      items = items.filter((item) => !known.has(item.relpath));
       this.state.items = this.state.items.concat(items);
     }
     this.state.cursor = payload.cursor || this.state.cursor;
@@ -1462,16 +1619,157 @@ export class AssetsPlusExplorer {
     }
   }
 
+  /** Paint a star button (card or lens) for the given state. */
+  applyStarState(button, starred) {
+    if (!button) return;
+    const label = starred ? t("actions.unstar") : t("actions.star");
+    button.classList.toggle("active", starred);
+    button.setAttribute("title", label);
+    button.setAttribute("aria-label", label);
+    button.setAttribute("aria-pressed", starred ? "true" : "false");
+    button.innerHTML = `<i class="pi ${starred ? "pi-star-fill" : "pi-star"}"></i>`;
+  }
+
+  /** Move generated results into the input root so they become assets for generations. */
+  async moveToImported(items) {
+    if (this.state.tab !== OUTPUT_TAB || !items.length) return;
+    try {
+      const payload = await fetchJson("/assets_plus/output/move_to_input", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ relpaths: items.map((item) => item.relpath) }),
+      });
+      const moved = payload.moved || [];
+      const failedCount = (payload.failed || []).length;
+      if (moved.length) {
+        this.removeItemsFromView(moved.map((entry) => entry.from));
+      }
+      if (!moved.length || failedCount) {
+        this.toast({
+          severity: moved.length ? "warn" : "error",
+          summary: t("toast.summary"),
+          detail: t("toast.move_failed", { count: failedCount || items.length }),
+          life: 4000,
+        });
+      }
+      if (moved.length) {
+        this.toast({
+          severity: "success",
+          summary: t("toast.summary"),
+          detail: t("toast.move_success", { count: moved.length }),
+          life: 2500,
+        });
+      }
+    } catch (error) {
+      warn(t("toast.move_failed", { count: items.length }), error);
+      this.toast({
+        severity: "error",
+        summary: t("toast.summary"),
+        detail: t("toast.move_failed", { count: items.length }),
+        life: 4000,
+      });
+    }
+  }
+
+  async setStarred(items, starred) {
+    const relpaths = items.map((item) => item.relpath);
+    if (!relpaths.length || !this.canDeleteCurrentTab()) return;
+    try {
+      const payload = await fetchJson(`/assets_plus/${this.state.tab}/star`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ relpaths, starred }),
+      });
+      const updated = new Set(payload.updated || []);
+      if (!updated.size) throw new Error("nothing updated");
+      this.state.items.forEach((item) => {
+        if (updated.has(item.relpath)) item.starred = starred;
+      });
+      this.refreshStarVisuals(updated);
+    } catch (error) {
+      warn(t("toast.star_failed"), error);
+      this.toast({
+        severity: "error",
+        summary: t("toast.summary"),
+        detail: t("toast.star_failed"),
+        life: 3000,
+      });
+    }
+  }
+
+  refreshStarVisuals(changedRelpaths) {
+    const { starredFirst } = this.getSettingsSnapshot();
+    if (starredFirst) {
+      // Order depends on the star: re-sort and rebuild the grid.
+      this.state.items = this.sortItems(this.state.items);
+      this.renderGrid({ reset: true });
+    } else {
+      this.elements.grid.querySelectorAll(".assets-plus-card").forEach((card) => {
+        const relpath = card.getAttribute("data-relpath");
+        if (!changedRelpaths.has(relpath)) return;
+        const item = this.state.items.find((entry) => entry.relpath === relpath);
+        const starred = Boolean(item?.starred);
+        card.classList.toggle("starred", starred);
+        this.applyStarState(card.querySelector(".assets-plus-card-star"), starred);
+      });
+    }
+    if (this.state.overlay.relpath) {
+      this.updateOverlayActions(this.getOverlayItem());
+    }
+  }
+
+  /** Drop items that left the current gallery; the lens moves to the nearest remaining item. */
+  removeItemsFromView(relpaths) {
+    const removed = new Set(relpaths);
+    const overlayRelpath = this.state.overlay.relpath;
+    const lensRemoved = Boolean(overlayRelpath && removed.has(overlayRelpath));
+    let nextOverlayRelpath = null;
+    if (lensRemoved) {
+      const filtered = this.getFilteredItems();
+      const index = filtered.findIndex((entry) => entry.relpath === overlayRelpath);
+      if (index !== -1) {
+        for (let i = index + 1; i < filtered.length && !nextOverlayRelpath; i += 1) {
+          if (!removed.has(filtered[i].relpath)) nextOverlayRelpath = filtered[i].relpath;
+        }
+        for (let i = index - 1; i >= 0 && !nextOverlayRelpath; i -= 1) {
+          if (!removed.has(filtered[i].relpath)) nextOverlayRelpath = filtered[i].relpath;
+        }
+      }
+    }
+
+    this.state.items = this.state.items.filter((item) => !removed.has(item.relpath));
+    relpaths.forEach((relpath) => this.state.selected.delete(relpath));
+    this.state.latestMtime = this.state.items.reduce(
+      (latest, item) => Math.max(latest, item.mtime),
+      0
+    );
+    if (lensRemoved) {
+      this.state.overlay.relpath = nextOverlayRelpath;
+      if (!nextOverlayRelpath) {
+        this.closeOverlay();
+      }
+    }
+    this.renderGrid({ reset: true });
+    if (nextOverlayRelpath && this.state.items.some((item) => item.relpath === nextOverlayRelpath)) {
+      this.state.overlay.relpath = nextOverlayRelpath;
+      this.updateOverlayView();
+    }
+  }
+
   async handleDelete(targetItem) {
     const items = targetItem ? [targetItem] : this.getSelectedItems();
     if (!items.length) return;
     const settings = this.getSettingsSnapshot();
     const mode = settings.deleteMode;
-    const message =
+    const hasStarred = items.some((item) => item.starred);
+    const baseMessage =
       mode === "hide"
         ? t("confirm.delete.hide_message")
         : t("confirm.delete.delete_message");
-    if (settings.confirmDelete) {
+    const message = hasStarred
+      ? `${baseMessage} ${t("confirm.delete.starred_note")}`
+      : baseMessage;
+    if (settings.confirmDelete || (hasStarred && settings.confirmDeleteStarred)) {
       const dialogService = this.app?.extensionManager?.dialog;
       let confirmed = false;
       if (dialogService?.confirm) {
@@ -1488,31 +1786,9 @@ export class AssetsPlusExplorer {
       if (!confirmed) return;
     }
 
-    const overlayRelpath = this.state.overlay.relpath;
     const deleteRelpaths = items.map((item) => item.relpath);
     const deleteEndpoint = this.getDeleteEndpoint();
     if (!deleteEndpoint) return;
-    let nextOverlayRelpath = null;
-    if (overlayRelpath && deleteRelpaths.includes(overlayRelpath)) {
-      const filtered = this.getFilteredItems();
-      const index = filtered.findIndex((entry) => entry.relpath === overlayRelpath);
-      if (index !== -1) {
-        for (let i = index + 1; i < filtered.length; i += 1) {
-          if (!deleteRelpaths.includes(filtered[i].relpath)) {
-            nextOverlayRelpath = filtered[i].relpath;
-            break;
-          }
-        }
-        if (!nextOverlayRelpath) {
-          for (let i = index - 1; i >= 0; i -= 1) {
-            if (!deleteRelpaths.includes(filtered[i].relpath)) {
-              nextOverlayRelpath = filtered[i].relpath;
-              break;
-            }
-          }
-        }
-      }
-    }
 
     try {
       await fetchJson(deleteEndpoint, {
@@ -1520,24 +1796,7 @@ export class AssetsPlusExplorer {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ relpaths: deleteRelpaths, mode }),
       });
-      const deleteSet = new Set(deleteRelpaths);
-      this.state.items = this.state.items.filter((item) => !deleteSet.has(item.relpath));
-      deleteRelpaths.forEach((relpath) => this.state.selected.delete(relpath));
-      this.state.latestMtime = this.state.items[0]?.mtime ?? 0;
-      if (overlayRelpath && deleteRelpaths.includes(overlayRelpath)) {
-        this.state.overlay.relpath = nextOverlayRelpath;
-        if (!nextOverlayRelpath) {
-          this.closeOverlay();
-        }
-      }
-      this.renderGrid({ reset: true });
-      if (
-        nextOverlayRelpath &&
-        this.state.items.some((item) => item.relpath === nextOverlayRelpath)
-      ) {
-        this.state.overlay.relpath = nextOverlayRelpath;
-        this.updateOverlayView();
-      }
+      this.removeItemsFromView(deleteRelpaths);
     } catch (error) {
       this.toast({
         severity: "error",

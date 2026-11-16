@@ -48,6 +48,8 @@ Available options:
 UI settings (ComfyUI Settings → Assets+ Explorer):
 - **Assets+ page size** — number of items fetched per page.
 - **Assets+ confirm deletions** — toggle confirmation dialogs for delete/hide actions.
+- **Assets+ always confirm deleting starred images** — ask for confirmation when starred items are deleted, even if general confirmations are off.
+- **Assets+ show starred first** — list starred items at the top of the gallery.
 - **Assets+ show overlay navigation hint** — toggle the on-screen navigation hint in the lens overlay.
 - **Assets+ keep overlay open when opening/replacing workflow** — keep the lens overlay open after workflow actions.
 - **Assets+ thumbnail quality** — pick low (256px) or high (512px) previews.
@@ -78,8 +80,10 @@ Example:
 * Deleting from disk (trash/delete) or hiding (hide) with confirmation in both tabs.
 * Full-screen lens overlay with navigation, workflow actions, zoom/pan controls, Esc-to-close, image format/size/zoom badges, and quick print/copy actions for images.
 * Assets+ shortcuts tab in the ComfyUI Shortcuts panel for overlay navigation actions.
-* Multi-selection via checkboxes on each asset tile.
-* Sticky header with icon-based actions (search toggle, select all, invert selection, download/delete) while only the gallery area scrolls.
+* Move generated results into the Imported tab (the ComfyUI input folder) with the `E` hotkey in the lens, the button in the lens, or in selection mode for many files at once. They stop being results and become assets for your generations, which also keeps them out of the way of mass clean-ups of the output folder. Files land in the root of the input folder (so Load Image can see them); name clashes get a `_1`, `_2`... suffix and nothing is overwritten. Stars move along with the file.
+* Selection mode (toggle in the header): tiles lose the workflow menu and drag-and-drop, and the star becomes a read-only indicator, and a click selects a tile (green overlay with a check mark) instead of opening the lens. Select all / invert selection live there too. With something selected, the header offers delete (the usual silent-delete and "always confirm starred" rules apply), star/unstar (toggles: removes the stars when all selected are already starred), move to Imported (Generated tab only) and download.
+* Star your favorites with the star button on a tile or in the lens, or with the `Q` hotkey in the lens. Stars are kept next to the hide list, so your files are never modified, and they follow files that are renamed or moved by hand.
+* Sticky header with icon-based actions (search toggle, selection mode, select all, invert selection, star/move/download/delete of the selection) while only the gallery area scrolls.
 * Server-side search optimized for large galleries.
 * Lazy loading of thumbnails and paged scrolling for large galleries.
 * Event-driven updates when ComfyUI emits execution or upload events (no polling).
@@ -91,7 +95,10 @@ Example:
   is not installed, regular deletion is used.
 * **delete** — permanently deletes the file.
 * **hide** — hides the asset from the list while keeping the file on disk
-  (the index is stored in `user/__assets_plus/hidden.json`).
+  (the index is stored in `user/__assets_plus/hidden.json`). Entries for files that disappeared are
+  cleaned up automatically, and entries follow a file that was renamed or moved by hand.
+
+Starred items are stored the same way in `user/__assets_plus/starred.json`.
 
 ## Workflow actions
 

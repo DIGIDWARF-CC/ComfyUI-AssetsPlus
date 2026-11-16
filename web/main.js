@@ -66,6 +66,18 @@ const buildOverlayCommands = () => [
     category: ASSETS_PLUS_SHORTCUTS_CATEGORY,
     function: () => explorerInstance?.handleOverlayCommand("delete"),
   },
+  {
+    id: OVERLAY_COMMANDS.star,
+    label: () => t("actions.toggle_star"),
+    category: ASSETS_PLUS_SHORTCUTS_CATEGORY,
+    function: () => explorerInstance?.handleOverlayCommand("star"),
+  },
+  {
+    id: OVERLAY_COMMANDS.moveToInput,
+    label: () => t("actions.move_to_input"),
+    category: ASSETS_PLUS_SHORTCUTS_CATEGORY,
+    function: () => explorerInstance?.handleOverlayCommand("move"),
+  },
 ];
 
 let booted = false;
@@ -112,7 +124,9 @@ const boot = async () => {
       applyLanguage(nextLanguage).catch((error) => {
         warn(t("log.translation_load_failed", { language: nextLanguage }), error);
       });
-    }, handleClearThumbnails),
+    }, handleClearThumbnails, () => {
+      explorerInstance?.refreshList?.();
+    }),
     setup(app) {
       registerSidebarTab(app);
     },

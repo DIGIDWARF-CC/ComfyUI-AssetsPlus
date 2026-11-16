@@ -69,12 +69,83 @@ def update_hidden(
     """
     with _hidden_lock:
         hidden = load_hidden()
-        modified = updater(hidden)
+        modified = updater(dict(hidden))
+        if modified == hidden:
+            return modified
         path = hidden_index_path()
         tmp_path = path.with_suffix(".tmp")
         data = {
             relpath: {"mtime": entry.mtime, "size": entry.size}
             for relpath, entry in modified.items()
+        }
+        tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        os.replace(str(tmp_path), str(path))
+        return modified
+
+
+# --- Starred index -----------------------------------------------------------
+# Starred markers live next to hidden.json instead of inside the media files:
+# rewriting PNG/MP4/GLB containers on every toggle is slow and risky, and would
+# change size/mtime that other indexes and ComfyUI itself rely on.  Keys are
+# "<scope>/<relpath>" with scope "output" or "input" so the two galleries can
+# never collide.
+
+STARRED_SCOPES = ("output", "input")
+
+
+def starred_key(scope: str, relpath: str) -> str:
+    return f"{scope}/{relpath}"
+
+
+def starred_index_path() -> Path:
+    return get_assets_plus_root() / "starred.json"
+
+
+def load_starred() -> dict[str, HiddenEntry]:
+    path = starred_index_path()
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    entries: dict[str, HiddenEntry] = {}
+    for key, payload in raw.items():
+        if not isinstance(payload, dict):
+            continue
+        try:
+            entries[key] = HiddenEntry(
+                relpath=key,
+                mtime=int(payload.get("mtime", 0)),
+                size=int(payload.get("size", 0)),
+            )
+        except (TypeError, ValueError):
+            continue
+    return entries
+
+
+_starred_lock = threading.Lock()
+
+
+def update_starred(
+    updater: Callable[[dict[str, HiddenEntry]], dict[str, HiddenEntry]],
+) -> dict[str, HiddenEntry]:
+    """Atomically read starred.json, apply *updater* and write it back.
+
+    Nothing is written when the updater leaves the content unchanged.
+    """
+    with _starred_lock:
+        starred = load_starred()
+        modified = updater(dict(starred))
+        if modified == starred:
+            return modified
+        path = starred_index_path()
+        tmp_path = path.with_suffix(".tmp")
+        data = {
+            key: {"mtime": entry.mtime, "size": entry.size}
+            for key, entry in modified.items()
         }
         tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         os.replace(str(tmp_path), str(path))

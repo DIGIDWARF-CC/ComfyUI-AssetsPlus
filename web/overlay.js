@@ -218,6 +218,16 @@ export const overlayAPI = {
       if (item && this.canDeleteCurrentTab()) {
         this.handleDelete(item);
       }
+    } else if (action === "star") {
+      const item = this.getOverlayItem();
+      if (item && this.canDeleteCurrentTab()) {
+        this.setStarred([item], !item.starred);
+      }
+    } else if (action === "move") {
+      const item = this.getOverlayItem();
+      if (item && this.state.tab === OUTPUT_TAB) {
+        this.moveToImported([item]);
+      }
     }
   },
 
@@ -255,13 +265,29 @@ export const overlayAPI = {
       hintDown,
       hintRight,
       hintDelete,
+      hintStar,
+      hintMove,
       hintUpKey,
       hintLeftKey,
       hintDownKey,
       hintRightKey,
       hintDeleteKey,
+      hintStarKey,
+      hintMoveKey,
     } = this.elements;
     const hintMap = [
+      {
+        button: hintStar,
+        keyEl: hintStarKey,
+        commandId: OVERLAY_COMMANDS.star,
+        title: t("actions.toggle_star"),
+      },
+      {
+        button: hintMove,
+        keyEl: hintMoveKey,
+        commandId: OVERLAY_COMMANDS.moveToInput,
+        title: t("actions.move_to_input"),
+      },
       {
         button: hintUp,
         keyEl: hintUpKey,
@@ -304,18 +330,46 @@ export const overlayAPI = {
   },
 
   updateOverlayHelpVisibility() {
-    const { overlayHint, hintDelete } = this.elements;
+    const { overlayHint, hintDelete, hintStar, hintMove } = this.elements;
     if (!overlayHint) return;
     const { showOverlayHelp } = this.getSettingsSnapshot();
     overlayHint.style.display = showOverlayHelp ? "grid" : "none";
     if (hintDelete) {
       hintDelete.disabled = !this.canDeleteCurrentTab();
     }
+    if (hintStar) {
+      hintStar.disabled = !this.canDeleteCurrentTab();
+    }
+    if (hintMove) {
+      hintMove.disabled = this.state.tab !== OUTPUT_TAB;
+    }
     this.updateOverlayShortcutHints();
   },
 
   updateOverlayActions(item) {
-    const { overlayOpenWorkflow, overlayReplaceWorkflow, overlayPrint, overlayCopy } = this.elements;
+    const {
+      overlayOpenWorkflow, overlayReplaceWorkflow, overlayPrint, overlayCopy, overlayStar,
+      overlayMove,
+    } = this.elements;
+    const { hintStarIcon } = this.elements;
+    if (hintStarIcon) {
+      hintStarIcon.className = `pi ${item?.starred ? "pi-star-fill" : "pi-star"}`;
+      hintStarIcon.style.color = item?.starred ? "#facc15" : "";
+    }
+    if (overlayMove) {
+      const { full } = this.getKeybindingDisplay(OVERLAY_COMMANDS.moveToInput);
+      const label = t("actions.move_to_input");
+      overlayMove.setAttribute("title", full ? `${label} (${full})` : label);
+      overlayMove.disabled = !item || this.state.tab !== OUTPUT_TAB;
+    }
+    if (overlayStar) {
+      this.applyStarState(overlayStar, Boolean(item?.starred));
+      const { full } = this.getKeybindingDisplay(OVERLAY_COMMANDS.star);
+      if (full) {
+        overlayStar.setAttribute("title", `${overlayStar.getAttribute("title")} (${full})`);
+      }
+      overlayStar.disabled = !item || !this.canDeleteCurrentTab();
+    }
     const hasWorkflow = item?.has_workflow && item?.type === "image";
     const isImage = item?.type === "image";
     overlayOpenWorkflow.disabled = !hasWorkflow;
