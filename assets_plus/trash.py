@@ -2,7 +2,7 @@
 
 ``send2trash`` is used when it is installed (it is well tested), otherwise a small
 native implementation takes over: SHFileOperation on Windows, the freedesktop.org
-trash specification on Linux and ``~/.Trash`` on macOS. Nothing here ever deletes a
+trash specification on Linux and ``~/.Trash`` (or the volume's ``.Trashes``) on macOS. Nothing here ever deletes a
 file permanently: if the file cannot be trashed, TrashError is raised and the file
 stays where it was.
 """
@@ -12,7 +12,6 @@ import ctypes
 import importlib.util
 import logging
 import os
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -100,7 +99,7 @@ def _trash_windows(path: Path) -> None:
 def _trash_freedesktop(path: Path) -> None:
     """Implements the freedesktop.org trash specification (home trash, then volume trash)."""
     info = os.lstat(path)
-    data_home = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    data_home = Path.home() / ".local" / "share"  # the default XDG_DATA_HOME
     home_trash = data_home / "Trash"
     uid = os.getuid()
 
@@ -161,19 +160,28 @@ def _trash_into(path: Path, trash_dir: Path, base: Path | None) -> None:
 # --- macOS -------------------------------------------------------------------
 
 def _trash_macos(path: Path) -> None:
-    trash = Path.home() / ".Trash"
-    counter = 0
-    while True:
-        name = path.name if counter == 0 else f"{path.stem} {counter}{path.suffix}"
-        target = trash / name
-        if not os.path.lexists(target):
-            try:
-                os.rename(path, target)
-                return
-            except OSError:
-                break  # other volume: let Finder handle it
-        counter += 1
-    script = 'tell application "Finder" to delete POSIX file "{}"'.format(
-        str(path).replace("\\", "\\\\").replace('"', '\\"')
-    )
-    subprocess.run(["osascript", "-e", script], check=True, capture_output=True, timeout=30)
+    """Move into ~/.Trash, or into the volume's .Trashes/<uid> when the file lives on another volume."""
+    info = os.lstat(path)
+    candidates = [Path.home() / ".Trash"]
+    topdir = path.parent
+    while not os.path.ismount(topdir) and topdir != topdir.parent:
+        topdir = topdir.parent
+    candidates.append(topdir / ".Trashes" / str(os.getuid()))
+
+    last_error: Exception | None = None
+    for trash in candidates:
+        try:
+            trash.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if os.stat(trash).st_dev != info.st_dev:
+                continue  # a rename cannot cross volumes
+            counter = 0
+            while True:
+                name = path.name if counter == 0 else f"{path.stem} {counter}{path.suffix}"
+                target = trash / name
+                if not os.path.lexists(target):
+                    os.rename(path, target)
+                    return
+                counter += 1
+        except OSError as error:
+            last_error = error
+    raise TrashError(f"no usable trash folder for {path}: {last_error}")
