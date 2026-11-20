@@ -76,7 +76,7 @@ Example:
 
 * List assets from the output and input directories (recursively).
 * Thumbnails via `/assets_plus/output/thumb` and `/assets_plus/input/thumb`.
-* Workflow/prompt metadata via `/assets_plus/output/meta` and `/assets_plus/input/meta`.
+* Workflow/prompt metadata (from images and videos) via `/assets_plus/output/meta` and `/assets_plus/input/meta`.
 * Deleting from disk (trash/delete) or hiding (hide) with confirmation in both tabs.
 * Full-screen lens overlay with navigation, workflow actions, zoom/pan controls, Esc-to-close, image format/size/zoom badges, and quick print/copy actions for images.
 * Assets+ shortcuts tab in the ComfyUI Shortcuts panel for overlay navigation actions.
@@ -110,7 +110,12 @@ If an asset has workflow metadata, the tile menu (burger button in the top-right
 * **Open workflow (new tab)** — opens the workflow in a new tab (like standard Media Assets).
 * **Replace current workflow** — replaces the workflow in the current tab without creating a new one.
 
-If there’s no metadata, the menu is hidden.
+These actions work for images (PNG/WebP) and for videos saved by ComfyUI's Save Video / Save WEBM nodes
+(MP4, MOV, WebM, MKV carry the workflow as embedded metadata; the lens has the same two buttons).
+The metadata is read from the file itself with a small built-in reader, no extra packages needed.
+
+If there’s no workflow in the file (for example it was generated through the API, only holds a prompt, or
+ComfyUI ran with `--disable-metadata`), the menu is hidden.
 
 ## Limitations
 

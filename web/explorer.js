@@ -1364,7 +1364,7 @@ export class AssetsPlusExplorer {
         event.dataTransfer.setDragImage(thumbEl, thumbEl.offsetWidth / 2, thumbEl.offsetHeight / 2);
       }
     });
-    const hasWorkflow = item.has_workflow && item.type === "image";
+    const hasWorkflow = item.has_workflow && (item.type === "image" || item.type === "video");
     if (hasWorkflow) {
       const menu = createElement("div", { className: "assets-plus-card-menu" });
       const menuButton = createElement("button", {
