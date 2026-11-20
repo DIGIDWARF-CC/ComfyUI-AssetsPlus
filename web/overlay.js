@@ -370,7 +370,7 @@ export const overlayAPI = {
       }
       overlayStar.disabled = !item || !this.canDeleteCurrentTab();
     }
-    const hasWorkflow = item?.has_workflow && item?.type === "image";
+    const hasWorkflow = item?.has_workflow && (item?.type === "image" || item?.type === "video");
     const isImage = item?.type === "image";
     overlayOpenWorkflow.disabled = !hasWorkflow;
     overlayReplaceWorkflow.disabled = !hasWorkflow;

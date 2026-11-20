@@ -10,6 +10,7 @@ from typing import Any
 from PIL import Image
 
 from .storage import thumb_cache_dir
+from .video_metadata import read_matroska_metadata, read_mp4_metadata
 
 LOGGER = logging.getLogger("assets_plus")
 
@@ -20,7 +21,7 @@ WORKFLOW_FLAG_CACHE_MAX_ENTRIES = 50000
 _workflow_flag_lock = threading.Lock()
 
 
-def _read_image_metadata(path: Path) -> dict[str, Any]:
+def _read_picture_metadata(path: Path) -> dict[str, Any]:
     try:
         with Image.open(path) as image:
             info = image.info or {}
@@ -34,9 +35,22 @@ def _read_image_metadata(path: Path) -> dict[str, Any]:
     return metadata
 
 
+_MP4_EXTENSIONS = {".mp4", ".mov", ".m4v"}
+_MATROSKA_EXTENSIONS = {".webm", ".mkv"}
+
+
+def _read_embedded_metadata(path: Path) -> dict[str, Any]:
+    """Workflow/prompt embedded in an image (PNG/WebP text chunks) or a video (MP4/MOV/WebM/MKV)."""
+    if path.suffix.lower() in _MP4_EXTENSIONS:
+        return dict(read_mp4_metadata(path))
+    if path.suffix.lower() in _MATROSKA_EXTENSIONS:
+        return dict(read_matroska_metadata(path))
+    return _read_picture_metadata(path)
+
+
 def read_workflow_metadata(path: Path) -> tuple[bool, dict[str, Any]]:
     """Read workflow metadata from an image file. Returns (has_workflow, metadata_dict)."""
-    metadata = _read_image_metadata(path)
+    metadata = _read_embedded_metadata(path)
     return bool(metadata), metadata
 
 
@@ -48,7 +62,7 @@ def has_workflow(path: Path, mtime: int, size: int) -> bool:
         if cached is not None:
             _workflow_flag_cache.move_to_end(cache_key)
             return cached
-    flag = bool(_read_image_metadata(path))
+    flag = bool(_read_embedded_metadata(path))  # workflow, or a prompt the graph can be rebuilt from
     with _workflow_flag_lock:
         _workflow_flag_cache[cache_key] = flag
         while len(_workflow_flag_cache) > WORKFLOW_FLAG_CACHE_MAX_ENTRIES:
@@ -58,7 +72,7 @@ def has_workflow(path: Path, mtime: int, size: int) -> bool:
 
 def read_metadata(path: Path) -> dict[str, Any]:
     """Read metadata from an image file."""
-    return _read_image_metadata(path)
+    return _read_embedded_metadata(path)
 
 
 def build_thumb_cache_key(relpath: str, mtime: int, size: int, width: int, height: int) -> str:

@@ -76,12 +76,12 @@ Example:
 
 * List assets from the output and input directories (recursively).
 * Thumbnails via `/assets_plus/output/thumb` and `/assets_plus/input/thumb`.
-* Workflow/prompt metadata via `/assets_plus/output/meta` and `/assets_plus/input/meta`.
+* Workflow/prompt metadata (from images and videos) via `/assets_plus/output/meta` and `/assets_plus/input/meta`.
 * Deleting from disk (trash/delete) or hiding (hide) with confirmation in both tabs.
 * Full-screen lens overlay with navigation, workflow actions, zoom/pan controls, Esc-to-close, image format/size/zoom badges, and quick print/copy actions for images.
 * Assets+ shortcuts tab in the ComfyUI Shortcuts panel for overlay navigation actions.
 * Move generated results into the Imported tab (the ComfyUI input folder) with the `E` hotkey in the lens, the button in the lens, or in selection mode for many files at once. They stop being results and become assets for your generations, which also keeps them out of the way of mass clean-ups of the output folder. Files land in the root of the input folder (so Load Image can see them); name clashes get a `_1`, `_2`... suffix and nothing is overwritten. Stars move along with the file.
-* Selection mode (toggle in the header): tiles lose the workflow menu and drag-and-drop, and the star becomes a read-only indicator, and a click selects a tile (green overlay with a check mark) instead of opening the lens. Select all / invert selection live there too. With something selected, the header offers delete (the usual silent-delete and "always confirm starred" rules apply), star/unstar (toggles: removes the stars when all selected are already starred), move to Imported (Generated tab only) and download.
+* Selection mode (toggle in the header): tiles lose the workflow menu and drag-and-drop, and the star becomes a read-only indicator, and a click selects a tile (green overlay with a check mark) instead of opening the lens. Shift+click selects (or deselects) the whole range from the previously clicked tile. Select all / invert selection live there too. With something selected, the header offers delete (the usual silent-delete and "always confirm starred" rules apply), star/unstar (toggles: removes the stars when all selected are already starred), move to Imported (Generated tab only) and download.
 * Star your favorites with the star button on a tile or in the lens, or with the `Q` hotkey in the lens. Stars are kept next to the hide list, so your files are never modified, and they follow files that are renamed or moved by hand.
 * Sticky header with icon-based actions (search toggle, selection mode, select all, invert selection, star/move/download/delete of the selection) while only the gallery area scrolls.
 * Server-side search optimized for large galleries.
@@ -103,14 +103,24 @@ Example:
 
 Starred items are stored the same way in `user/__assets_plus/starred.json`.
 
-## Workflow actions
+## Tile actions and workflow actions
 
-If an asset has workflow metadata, the tile menu (burger button in the top-right corner) exposes:
+Hovering a tile shows a small panel in its top-right corner: a download button and a **more** (⋯) button. The same menu opens with a right click on the tile (not in selection mode). It offers Inspect asset (the lens), Insert as node in workflow (a Load Image/Video/Audio node at the centre of the canvas), Download, the workflow actions below, Export workflow (saves the embedded workflow, or the prompt, as a `.json`), Star / Remove star, Move to Imported (Generated tab) and Delete (the usual silent-delete and starred-confirm rules apply).
+
+If an asset has workflow metadata, the menu also exposes:
 
 * **Open workflow (new tab)** — opens the workflow in a new tab (like standard Media Assets).
 * **Replace current workflow** — replaces the workflow in the current tab without creating a new one.
 
-If there’s no metadata, the menu is hidden.
+These actions work for images (PNG/WebP) and for videos saved by ComfyUI's Save Video / Save WEBM nodes
+(MP4, MOV, WebM, MKV carry the workflow as embedded metadata; the lens has the same two buttons).
+The metadata is read from the file itself with a small built-in reader, no extra packages needed.
+
+Files made through the API (for example batch or profiling runs) only carry the `prompt`, not the editor
+workflow. For those the same actions rebuild a graph from the prompt with ComfyUI's own API-format loader and
+tell you so: node positions are laid out automatically, groups and notes are not stored in a prompt.
+
+If there is neither a workflow nor a prompt in the file (or ComfyUI ran with `--disable-metadata`), the menu is hidden.
 
 ## Limitations
 

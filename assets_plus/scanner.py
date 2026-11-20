@@ -103,7 +103,7 @@ def list_directory_items(
             continue
         file_type = _classify_kind(path)
         has_wf = False
-        if file_type == "image":
+        if file_type in ("image", "video"):
             has_wf = has_workflow(path, mtime, size)
         items.append({
             "relpath": relpath,
