@@ -75,12 +75,15 @@ export const fetchJson = async (path, options) => {
 export const getSettingValue = (appInstance, id, fallback) => {
   // Newer frontends dropped `app.settings` / `app.ui.settings.get`; the stable
   // accessors are `extensionManager.setting.get` and `ui.settings.getSettingValue`.
-  const sources = [
-    appInstance?.extensionManager?.setting?.get?.bind(appInstance.extensionManager.setting),
-    appInstance?.ui?.settings?.getSettingValue?.bind(appInstance.ui.settings),
-    appInstance?.settings?.get?.bind(appInstance.settings),
-    appInstance?.ui?.settings?.get?.bind(appInstance.ui.settings),
-  ].filter(Boolean);
+  const stores = [
+    [appInstance?.extensionManager?.setting, "get"],
+    [appInstance?.ui?.settings, "getSettingValue"],
+    [appInstance?.settings, "get"],
+    [appInstance?.ui?.settings, "get"],
+  ];
+  const sources = stores
+    .filter(([store, method]) => typeof store?.[method] === "function")
+    .map(([store, method]) => (settingId) => store[method](settingId));
   for (const getter of sources) {
     let value;
     try {

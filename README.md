@@ -136,4 +136,4 @@ The extension structure matches Manager requirements:
 
 ## Third-party assets
 
-* `web/vendor/model-viewer.min.js` — [`@google/model-viewer`](https://github.com/google/model-viewer) v4.0.0 and its bundled upstream dependencies. License headers are preserved in the vendored file.
+* `web/vendor/model-viewer.min.js` — [`@google/model-viewer`](https://github.com/google/model-viewer) v4.0.0 and its bundled upstream dependencies. License headers are preserved in the vendored file. It is bundled on purpose, so the extension stays self-contained and works offline; it is byte-identical to the upstream npm release (SHA-256 and verification steps in [VENDORED.md](VENDORED.md)). See [SECURITY.md](SECURITY.md) for what the extension can and cannot do.
