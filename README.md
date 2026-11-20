@@ -114,8 +114,11 @@ These actions work for images (PNG/WebP) and for videos saved by ComfyUI's Save 
 (MP4, MOV, WebM, MKV carry the workflow as embedded metadata; the lens has the same two buttons).
 The metadata is read from the file itself with a small built-in reader, no extra packages needed.
 
-If there’s no workflow in the file (for example it was generated through the API, only holds a prompt, or
-ComfyUI ran with `--disable-metadata`), the menu is hidden.
+Files made through the API (for example batch or profiling runs) only carry the `prompt`, not the editor
+workflow. For those the same actions rebuild a graph from the prompt with ComfyUI's own API-format loader and
+tell you so: node positions are laid out automatically, groups and notes are not stored in a prompt.
+
+If there is neither a workflow nor a prompt in the file (or ComfyUI ran with `--disable-metadata`), the menu is hidden.
 
 ## Limitations
 

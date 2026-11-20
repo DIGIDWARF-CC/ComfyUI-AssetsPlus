@@ -51,7 +51,7 @@ def _read_embedded_metadata(path: Path) -> dict[str, Any]:
 def read_workflow_metadata(path: Path) -> tuple[bool, dict[str, Any]]:
     """Read workflow metadata from an image file. Returns (has_workflow, metadata_dict)."""
     metadata = _read_embedded_metadata(path)
-    return "workflow" in metadata, metadata
+    return bool(metadata), metadata
 
 
 def has_workflow(path: Path, mtime: int, size: int) -> bool:
@@ -62,7 +62,7 @@ def has_workflow(path: Path, mtime: int, size: int) -> bool:
         if cached is not None:
             _workflow_flag_cache.move_to_end(cache_key)
             return cached
-    flag = "workflow" in _read_embedded_metadata(path)  # a prompt-only file has nothing to open
+    flag = bool(_read_embedded_metadata(path))  # workflow, or a prompt the graph can be rebuilt from
     with _workflow_flag_lock:
         _workflow_flag_cache[cache_key] = flag
         while len(_workflow_flag_cache) > WORKFLOW_FLAG_CACHE_MAX_ENTRIES:

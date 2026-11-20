@@ -54,6 +54,7 @@
   "toast.copy_success": "Copied {filename} to clipboard.",
   "toast.copy_failed": "Failed to copy {filename}.",
   "toast.print_failed": "Failed to print {filename}.",
+  "toast.workflow_from_prompt": "No workflow in the file. The graph was rebuilt from its prompt, node layout is automatic.",
   "toast.workflow_missing": "Workflow metadata not found.",
   "toast.workflow_replaced": "Workflow replaced in current tab.",
   "toast.workflow_opened": "Workflow opened in a new tab.",

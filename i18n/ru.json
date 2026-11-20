@@ -54,6 +54,7 @@
   "toast.copy_success": "{filename} скопирован в буфер обмена.",
   "toast.copy_failed": "Не удалось скопировать {filename}.",
   "toast.print_failed": "Не удалось отправить на печать {filename}.",
+  "toast.workflow_from_prompt": "В файле нет workflow. Граф восстановлен из prompt, раскладка нод автоматическая.",
   "toast.workflow_missing": "Workflow metadata не найдена.",
   "toast.workflow_replaced": "Workflow заменён в текущей вкладке.",
   "toast.workflow_opened": "Workflow открыт в новой вкладке.",

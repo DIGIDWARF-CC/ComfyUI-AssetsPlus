@@ -1831,18 +1831,44 @@ export class AssetsPlusExplorer {
     const metadata = payload?.metadata ?? {};
     const workflowRaw = metadata.workflow ?? null;
     const workflow = normalizeWorkflow(workflowRaw);
+    // Files made through the API only carry the prompt; ComfyUI can rebuild a graph from it.
+    const prompt = workflow ? null : normalizeWorkflow(metadata.prompt ?? null);
     return {
       workflow,
       workflowRaw,
+      prompt,
       filename: workflowFilenameForAsset(asset.filename),
     };
+  }
+
+  /** Rebuild a graph from an API-format prompt (no node positions, groups or notes are stored in it). */
+  async openWorkflowFromPrompt(replaceCurrent, prompt, filename, options) {
+    if (!replaceCurrent) {
+      const workflowStore = resolveWorkflowStore(this.app);
+      if (workflowStore?.createTemporary && workflowStore?.openWorkflow) {
+        // loadApiJson fills the active workflow, so make the new tab active first.
+        await workflowStore.openWorkflow(workflowStore.createTemporary(filename));
+      }
+    }
+    await this.app.loadApiJson(prompt, filename);
+    this.toast({
+      severity: "info",
+      summary: t("toast.summary"),
+      detail: t("toast.workflow_from_prompt"),
+      life: 5000,
+    });
+    this.maybeCloseOverlayAfterWorkflow(options);
   }
 
   async openWorkflow(replaceCurrent, targetItem = null, options = {}) {
     const items = targetItem ? [targetItem] : this.getSelectedItems();
     if (items.length !== 1) return;
     try {
-      const { workflow, workflowRaw, filename } = await this.extractWorkflow(items[0]);
+      const { workflow, workflowRaw, prompt, filename } = await this.extractWorkflow(items[0]);
+      if (!workflow && prompt && typeof this.app?.loadApiJson === "function") {
+        await this.openWorkflowFromPrompt(replaceCurrent, prompt, filename, options);
+        return;
+      }
       if (!workflow) {
         this.toast({
           severity: "warn",
