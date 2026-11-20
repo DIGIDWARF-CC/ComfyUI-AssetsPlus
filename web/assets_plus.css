@@ -168,6 +168,9 @@
 .assets-plus-selection-mode .assets-plus-card-menu {
   display: none;
 }
+.assets-plus-selection-mode .assets-plus-grid {
+  user-select: none;
+}
 /* The star stays as a read-only indicator (above the selection overlay). */
 .assets-plus-root.assets-plus-selection-mode .assets-plus-card .assets-plus-card-star {
   opacity: 1;

@@ -38,6 +38,7 @@ export class AssetsPlusExplorer {
       searchVisible: false,
       selected: new Set(),
       selectionMode: false,
+      selectionAnchor: null,
       config: null,
       cursor: "",
       hasMore: true,
@@ -1005,6 +1006,7 @@ export class AssetsPlusExplorer {
 
   clearSelection() {
     this.state.selected = new Set();
+    this.state.selectionAnchor = null;
   }
 
   getSelectedItems() {
@@ -1140,10 +1142,40 @@ export class AssetsPlusExplorer {
     this.updateSearchVisibility();
   }
 
+  /**
+   * Tile click in selection mode. Shift+click applies the new state of the clicked tile to every tile
+   * between the previously clicked one (the anchor) and this one, in gallery order.
+   */
+  selectFromClick(event, relpath) {
+    const items = this.getFilteredItems();
+    const value = !this.state.selected.has(relpath);
+    const anchor = this.state.selectionAnchor;
+    const anchorIndex = event.shiftKey && anchor ? items.findIndex((entry) => entry.relpath === anchor) : -1;
+    const index = items.findIndex((entry) => entry.relpath === relpath);
+    this.state.selectionAnchor = relpath;
+    if (anchorIndex === -1 || index === -1) {
+      this.setSelected(relpath, value);
+      return;
+    }
+    const from = Math.min(anchorIndex, index);
+    const to = Math.max(anchorIndex, index);
+    for (let position = from; position <= to; position += 1) {
+      const target = items[position].relpath;
+      if (value) this.state.selected.add(target);
+      else this.state.selected.delete(target);
+    }
+    this.applySelectionStyles();
+    this.updateActionsBar();
+    if (this.state.overlay.relpath) {
+      this.updateOverlayView();
+    }
+  }
+
   setSelectionMode(enabled) {
     const next = Boolean(enabled);
     if (this.state.selectionMode === next) return;
     this.state.selectionMode = next;
+    this.state.selectionAnchor = null;
     if (!next) this.state.selected = new Set();
     this.closeContextMenu();
     this.elements.root?.classList.toggle("assets-plus-selection-mode", next);
@@ -1399,9 +1431,13 @@ export class AssetsPlusExplorer {
       });
     }
 
+    card.addEventListener("mousedown", (event) => {
+      // Shift+click extends a range: keep the browser from also selecting text/images between tiles.
+      if (this.state.selectionMode && event.shiftKey) event.preventDefault();
+    });
     card.addEventListener("click", (event) => {
       if (this.state.selectionMode) {
-        this.setSelected(item.relpath, !this.state.selected.has(item.relpath));
+        this.selectFromClick(event, item.relpath);
         return;
       }
       if (event.target.closest(".assets-plus-card-menu")) {
