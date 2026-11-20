@@ -107,14 +107,19 @@ export class AssetsPlusExplorer {
     titleRow.appendChild(title);
     titleRow.appendChild(refreshButton);
 
-    const controls = createElement("div", { className: "assets-plus-controls" });
+    const controls = createElement("div", {
+      className: "assets-plus-controls",
+      attrs: { role: "tablist" },
+    });
     const outputTab = createElement("button", {
       className: "assets-plus-tab active",
       text: t("tabs.output"),
+      attrs: { role: "tab", "aria-selected": "true" },
     });
     const inputTab = createElement("button", {
       className: "assets-plus-tab",
       text: t("tabs.input"),
+      attrs: { role: "tab", "aria-selected": "false" },
     });
     controls.appendChild(outputTab);
     controls.appendChild(inputTab);
@@ -915,8 +920,11 @@ export class AssetsPlusExplorer {
 
   updateTabs() {
     const { outputTab, inputTab } = this.elements;
-    outputTab.classList.toggle("active", this.state.tab === OUTPUT_TAB);
-    inputTab.classList.toggle("active", this.state.tab === INPUT_TAB);
+    const outputActive = this.state.tab === OUTPUT_TAB;
+    outputTab.classList.toggle("active", outputActive);
+    inputTab.classList.toggle("active", !outputActive);
+    outputTab.setAttribute("aria-selected", outputActive ? "true" : "false");
+    inputTab.setAttribute("aria-selected", outputActive ? "false" : "true");
     this.updateActionsBar();
   }
 
@@ -1337,6 +1345,12 @@ export class AssetsPlusExplorer {
     });
 
     card.appendChild(thumb);
+    if (item.type === "video") {
+      const videoBadge = createElement("div", { className: "assets-plus-card-video" });
+      videoBadge.innerHTML = '<i class="pi pi-video"></i>';
+      videoBadge.setAttribute("aria-hidden", "true");
+      card.appendChild(videoBadge);
+    }
     card.appendChild(starButton);
     card.appendChild(selectMark);
     card.draggable = !this.state.selectionMode;

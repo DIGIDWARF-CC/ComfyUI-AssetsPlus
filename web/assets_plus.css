@@ -22,6 +22,8 @@
   --assets-plus-accent: var(--p-primary-color, #2563eb);
   --assets-plus-accent-contrast: var(--p-primary-contrast-color, #ffffff);
   --assets-plus-thumb-bg: var(--comfy-menu-bg, var(--bg-color, #0f172a));
+  --assets-plus-glyph: var(--fg-color, #e5e7eb);
+  --assets-plus-halo: var(--comfy-menu-bg, var(--bg-color, #0f172a));
   background: var(--assets-plus-panel-bg);
 }
 .assets-plus-header {
@@ -55,23 +57,33 @@
 }
 .assets-plus-controls {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
+  gap: 4px;
+  align-items: flex-end;
+  border-bottom: 1px solid var(--assets-plus-border);
 }
 .assets-plus-tab {
-  border: 1px solid var(--assets-plus-border);
-  background: var(--assets-plus-control-bg);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  background: transparent;
   color: inherit;
-  padding: 4px 10px;
-  border-radius: 6px;
+  opacity: 0.65;
+  padding: 6px 14px;
+  border-radius: 0;
   cursor: pointer;
+  font: inherit;
+}
+.assets-plus-tab:hover {
+  opacity: 1;
 }
 .assets-plus-tab.active {
-  background: var(--assets-plus-card-bg);
-  border-color: var(--assets-plus-accent);
-  color: inherit;
-  box-shadow: 0 0 0 1px var(--assets-plus-accent) inset;
+  opacity: 1;
+  font-weight: 600;
+  border-bottom-color: var(--assets-plus-accent);
+}
+.assets-plus-tab:focus-visible {
+  outline: 2px solid var(--assets-plus-accent);
+  outline-offset: -2px;
 }
 .assets-plus-button {
   border: 1px solid var(--assets-plus-border);
@@ -161,10 +173,6 @@
   opacity: 1;
   z-index: 5;
   pointer-events: none;
-  background: none;
-  border-color: transparent;
-  backdrop-filter: none;
-  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.7));
 }
 .assets-plus-selection-mode .assets-plus-card.selected {
   border-color: #22c55e;
@@ -177,21 +185,29 @@
 .assets-plus-action-button.active .pi-star-fill {
   color: #facc15;
 }
-.assets-plus-card-star {
-  position: absolute;
-  right: 6px;
-  bottom: 6px;
-  z-index: 2;
-  border: 1px solid rgba(148, 163, 184, 0.35);
-  background: var(--assets-plus-control-bg);
-  color: inherit;
-  padding: 3px 5px;
-  border-radius: 8px;
+/* Glyph-only overlay buttons: system text colour with a soft halo in the system background colour,
+   readable on dark, light and yellow media in both Comfy themes. */
+.assets-plus-card-star,
+.assets-plus-card-menu-button {
+  border: 0;
+  background: none;
+  color: var(--assets-plus-glyph);
+  padding: 4px;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  backdrop-filter: blur(8px);
+  text-shadow:
+    0 0 2px var(--assets-plus-halo),
+    0 0 3px var(--assets-plus-halo),
+    0 0 4px var(--assets-plus-halo),
+    0 0 6px var(--assets-plus-halo);
+}
+.assets-plus-card-star {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  z-index: 2;
   opacity: 0;
   transition: opacity 0.15s ease;
 }
@@ -201,14 +217,28 @@
   opacity: 1;
 }
 .assets-plus-card-star .pi {
-  font-size: 13px;
+  font-size: 16px;
 }
 .assets-plus-card-star.active,
 .assets-plus-icon-button.assets-plus-overlay-star.active {
   color: #facc15;
 }
-.assets-plus-card-star.active {
-  border-color: rgba(250, 204, 21, 0.55);
+.assets-plus-card-video {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 7px 3px 5px;
+  border-top-right-radius: 8px;
+  background: var(--assets-plus-halo);
+  color: var(--assets-plus-glyph);
+  pointer-events: none;
+}
+.assets-plus-card-video .pi {
+  font-size: 12px;
 }
 .assets-plus-thumb {
   width: 100%;
@@ -254,21 +284,12 @@
 }
 .assets-plus-card-menu {
   position: absolute;
-  top: 6px;
-  right: 6px;
+  top: 4px;
+  right: 4px;
   z-index: 3;
 }
-.assets-plus-card-menu-button {
-  border: 1px solid rgba(148, 163, 184, 0.35);
-  background: var(--assets-plus-control-bg);
-  color: inherit;
-  padding: 4px 6px;
-  border-radius: 8px;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  backdrop-filter: blur(8px);
+.assets-plus-card-menu-button .pi {
+  font-size: 16px;
 }
 .assets-plus-context-menu {
   position: fixed;
