@@ -223,7 +223,7 @@
 .assets-plus-icon-button.assets-plus-overlay-star.active {
   color: #facc15;
 }
-.assets-plus-card-video {
+.assets-plus-card-kind {
   position: absolute;
   left: 0;
   bottom: 0;
@@ -237,7 +237,7 @@
   color: var(--assets-plus-glyph);
   pointer-events: none;
 }
-.assets-plus-card-video .pi {
+.assets-plus-card-kind .pi {
   font-size: 12px;
 }
 .assets-plus-thumb {

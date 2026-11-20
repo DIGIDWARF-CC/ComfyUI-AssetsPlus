@@ -19,6 +19,9 @@ import {
 import { t } from './i18n.js';
 import { overlayAPI } from './overlay.js';
 
+// Corner badge icon per media type (images need none: the thumbnail says it all).
+const CARD_KIND_ICONS = { video: "pi-video", audio: "pi-volume-up" };
+
 export class AssetsPlusExplorer {
   constructor(appInstance, container) {
     this.app = appInstance;
@@ -1345,11 +1348,12 @@ export class AssetsPlusExplorer {
     });
 
     card.appendChild(thumb);
-    if (item.type === "video") {
-      const videoBadge = createElement("div", { className: "assets-plus-card-video" });
-      videoBadge.innerHTML = '<i class="pi pi-video"></i>';
-      videoBadge.setAttribute("aria-hidden", "true");
-      card.appendChild(videoBadge);
+    const kindIcon = CARD_KIND_ICONS[item.type];
+    if (kindIcon) {
+      const kindBadge = createElement("div", { className: "assets-plus-card-kind" });
+      kindBadge.innerHTML = `<i class="pi ${kindIcon}"></i>`;
+      kindBadge.setAttribute("aria-hidden", "true");
+      card.appendChild(kindBadge);
     }
     card.appendChild(starButton);
     card.appendChild(selectMark);
