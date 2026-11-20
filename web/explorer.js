@@ -56,6 +56,7 @@ export class AssetsPlusExplorer {
       contextMenu: {
         relpath: null,
         open: false,
+        anchorKind: null,
       },
       overlay: {
         relpath: null,
@@ -77,6 +78,7 @@ export class AssetsPlusExplorer {
     this.overlayPanEndHandler = null;
     this.overlayImageLoadId = 0;
     this.documentClickHandler = (event) => this.handleDocumentClick(event);
+    this.documentContextMenuHandler = (event) => this.handleDocumentContextMenu(event);
     this.overlayKeydownHandler = (event) => this.handleOverlayKeydown(event);
     this.thumbObserver = null;
     this.scrollHandler = null;
@@ -207,16 +209,6 @@ export class AssetsPlusExplorer {
 
     const contextMenu = createElement("div", { className: "assets-plus-context-menu" });
     const contextMenuList = createElement("div", { className: "assets-plus-context-menu-list" });
-    const contextMenuOpen = createElement("button", {
-      className: "assets-plus-context-menu-item",
-      text: t("actions.open_workflow_new_tab"),
-    });
-    const contextMenuReplace = createElement("button", {
-      className: "assets-plus-context-menu-item",
-      text: t("actions.replace_workflow"),
-    });
-    contextMenuList.appendChild(contextMenuOpen);
-    contextMenuList.appendChild(contextMenuReplace);
     contextMenu.appendChild(contextMenuList);
 
     const overlay = createElement("div", { className: "assets-plus-overlay" });
@@ -412,8 +404,7 @@ export class AssetsPlusExplorer {
       grid,
       body,
       contextMenu,
-      contextMenuOpen,
-      contextMenuReplace,
+      contextMenuList,
       actionsBar,
       downloadButton,
       moveButton,
@@ -479,14 +470,7 @@ export class AssetsPlusExplorer {
     moveButton.addEventListener("click", () => this.moveToImported(this.getSelectedItems()));
     deleteButton.addEventListener("click", () => this.handleDelete());
     document.addEventListener("click", this.documentClickHandler);
-    contextMenuOpen.addEventListener("click", (event) => {
-      event.stopPropagation();
-      this.handleContextMenuAction("open");
-    });
-    contextMenuReplace.addEventListener("click", (event) => {
-      event.stopPropagation();
-      this.handleContextMenuAction("replace");
-    });
+    document.addEventListener("contextmenu", this.documentContextMenuHandler);
 
     overlayClose.addEventListener("click", () => this.closeOverlay());
     overlayPrev.addEventListener("click", () => this.navigateOverlay(-1));
@@ -546,8 +530,6 @@ export class AssetsPlusExplorer {
       searchInput,
       downloadButton,
       deleteButton,
-      contextMenuOpen,
-      contextMenuReplace,
       overlayClose,
       overlayPrev,
       overlayNext,
@@ -603,8 +585,12 @@ export class AssetsPlusExplorer {
       this.elements.selectModeButton.setAttribute("aria-label", t("actions.selection_mode"));
     }
     this.updateActionsBar();
-    if (contextMenuOpen) contextMenuOpen.textContent = t("actions.open_workflow_new_tab");
-    if (contextMenuReplace) contextMenuReplace.textContent = t("actions.replace_workflow");
+    this.closeContextMenu();
+    this.elements.grid?.querySelectorAll(".assets-plus-card-more, .assets-plus-card-download").forEach((button) => {
+      const label = t(button.classList.contains("assets-plus-card-more") ? "actions.more" : "actions.download");
+      button.setAttribute("title", label);
+      button.setAttribute("aria-label", label);
+    });
     if (overlayClose) overlayClose.setAttribute("aria-label", t("overlay.close"));
     if (overlayPrev) overlayPrev.setAttribute("aria-label", t("overlay.previous"));
     if (overlayNext) overlayNext.setAttribute("aria-label", t("overlay.next"));
@@ -834,6 +820,7 @@ export class AssetsPlusExplorer {
     }
     this.detachOverlayHandlers();
     document.removeEventListener("click", this.documentClickHandler);
+    document.removeEventListener("contextmenu", this.documentContextMenuHandler);
     if (this.elements?.contextMenu?.parentNode) {
       this.elements.contextMenu.parentNode.removeChild(this.elements.contextMenu);
     }
@@ -1034,6 +1021,9 @@ export class AssetsPlusExplorer {
   handleScroll() {
     if (this.state.scrollTicking) return;
     this.state.scrollTicking = true;
+    if (this.state.contextMenu.open && this.state.contextMenu.anchorKind === "point") {
+      this.closeContextMenu();
+    }
     window.requestAnimationFrame(() => {
       this.state.scrollTicking = false;
       this.maybeLoadNextPage();
@@ -1205,7 +1195,13 @@ export class AssetsPlusExplorer {
 
   handleDocumentClick(event) {
     if (event.target.closest(".assets-plus-context-menu")) return;
-    if (event.target.closest(".assets-plus-card-menu-button")) return;
+    if (event.target.closest(".assets-plus-card-more")) return;
+    this.closeContextMenu();
+  }
+
+  handleDocumentContextMenu(event) {
+    // A right click on a tile opens (or moves) the menu itself; anywhere else it closes it.
+    if (event.target.closest?.(".assets-plus-card, .assets-plus-context-menu")) return;
     this.closeContextMenu();
   }
 
@@ -1215,29 +1211,119 @@ export class AssetsPlusExplorer {
     contextMenu.classList.remove("open");
     this.state.contextMenu.open = false;
     this.state.contextMenu.relpath = null;
+    this.state.contextMenu.anchorKind = null;
+    this.elements.grid?.querySelectorAll(".assets-plus-card.menu-open").forEach((card) => {
+      card.classList.remove("menu-open");
+    });
   }
 
-  positionContextMenu(button) {
+  /** Place the menu next to a button, or at a pointer position ({ x, y }), inside the viewport. */
+  positionContextMenu(anchor) {
     const { contextMenu } = this.elements;
-    if (!contextMenu || !button) return;
+    if (!contextMenu || !anchor) return;
     contextMenu.style.visibility = "hidden";
     contextMenu.classList.add("open");
     contextMenu.style.left = "0px";
     contextMenu.style.top = "0px";
     const menuRect = contextMenu.getBoundingClientRect();
-    const buttonRect = button.getBoundingClientRect();
     const padding = 8;
-    let left = buttonRect.right + 6;
-    let top = buttonRect.bottom + 6;
-    if (left + menuRect.width > window.innerWidth - padding) {
-      left = Math.max(padding, buttonRect.left - menuRect.width - 6);
-    }
-    if (top + menuRect.height > window.innerHeight - padding) {
-      top = Math.max(padding, buttonRect.top - menuRect.height - 6);
+    let left;
+    let top;
+    if (typeof anchor.getBoundingClientRect === "function") {
+      const buttonRect = anchor.getBoundingClientRect();
+      left = buttonRect.right + 6;
+      top = buttonRect.bottom + 6;
+      if (left + menuRect.width > window.innerWidth - padding) {
+        left = Math.max(padding, buttonRect.left - menuRect.width - 6);
+      }
+      if (top + menuRect.height > window.innerHeight - padding) {
+        top = Math.max(padding, buttonRect.top - menuRect.height - 6);
+      }
+    } else {
+      left = Math.min(anchor.x, window.innerWidth - menuRect.width - padding);
+      top = Math.min(anchor.y, window.innerHeight - menuRect.height - padding);
+      left = Math.max(padding, left);
+      top = Math.max(padding, top);
     }
     contextMenu.style.left = `${left}px`;
     contextMenu.style.top = `${top}px`;
     contextMenu.style.visibility = "";
+  }
+
+  /** Entries of the tile menu, in groups (a separator is drawn between non-empty groups). */
+  getContextMenuGroups(item) {
+    const hasWorkflow = item.has_workflow && (item.type === "image" || item.type === "video");
+    const canInsert = ["image", "video", "audio"].includes(item.type);
+    const starLabel = item.starred ? "actions.unstar" : "actions.star";
+    return [
+      [
+        { icon: "pi-search-plus", label: "actions.inspect", run: () => this.openOverlay(item.relpath) },
+        canInsert && { icon: "pi-plus-circle", label: "actions.insert_as_node", run: () => this.insertAssetAsNode(item) },
+        { icon: "pi-download", label: "actions.download", run: () => this.handleDownload(item) },
+      ],
+      hasWorkflow && [
+        { icon: "pi-external-link", label: "actions.open_workflow_new_tab", run: () => this.openWorkflow(false, item) },
+        { icon: "pi-arrow-right-arrow-left", label: "actions.replace_workflow", run: () => this.openWorkflow(true, item) },
+        { icon: "pi-file-export", label: "actions.export_workflow", run: () => this.exportWorkflow(item) },
+      ],
+      [
+        {
+          icon: item.starred ? "pi-star-fill" : "pi-star",
+          label: starLabel,
+          run: () => this.setStarred([item], !item.starred),
+        },
+        this.state.tab === OUTPUT_TAB && { icon: "pi-inbox", label: "actions.move_to_input", run: () => this.moveToImported([item]) },
+      ],
+      this.canDeleteCurrentTab() && [
+        { icon: "pi-trash", label: "actions.delete", danger: true, run: () => this.handleDelete(item) },
+      ],
+    ]
+      .filter(Boolean)
+      .map((group) => group.filter(Boolean))
+      .filter((group) => group.length);
+  }
+
+  renderContextMenu(item) {
+    const { contextMenuList } = this.elements;
+    if (!contextMenuList) return;
+    contextMenuList.innerHTML = "";
+    this.getContextMenuGroups(item).forEach((group, index) => {
+      if (index > 0) {
+        contextMenuList.appendChild(createElement("div", { className: "assets-plus-context-menu-separator" }));
+      }
+      group.forEach((entry) => {
+        const button = createElement("button", {
+          className: `assets-plus-context-menu-item${entry.danger ? " danger" : ""}`,
+        });
+        const icon = document.createElement("i");
+        icon.className = `pi ${entry.icon}`;
+        const label = document.createElement("span");
+        label.textContent = t(entry.label);
+        button.appendChild(icon);
+        button.appendChild(label);
+        button.addEventListener("click", (event) => {
+          event.stopPropagation();
+          this.closeContextMenu();
+          entry.run();
+        });
+        contextMenuList.appendChild(button);
+      });
+    });
+  }
+
+  /** Open the tile menu next to a button ({element}) or at the pointer ({x, y}). */
+  openContextMenu(item, anchor) {
+    if (!item || !anchor || this.state.selectionMode) return;
+    this.closeContextMenu();
+    const isElement = typeof anchor.getBoundingClientRect === "function";
+    this.state.contextMenu.relpath = item.relpath;
+    this.state.contextMenu.open = true;
+    this.state.contextMenu.anchorKind = isElement ? "button" : "point";
+    this.renderContextMenu(item);
+    this.positionContextMenu(anchor);
+    this.elements.grid
+      ?.querySelector(`[data-relpath="${typeof CSS !== "undefined" && CSS.escape ? CSS.escape(item.relpath) : item.relpath}"]`)
+      ?.classList.add("menu-open");
   }
 
   toggleContextMenu(item, button) {
@@ -1247,25 +1333,7 @@ export class AssetsPlusExplorer {
       this.closeContextMenu();
       return;
     }
-    this.state.contextMenu.relpath = item.relpath;
-    this.state.contextMenu.open = true;
-    this.positionContextMenu(button);
-  }
-
-  handleContextMenuAction(action) {
-    const targetRelpath = this.state.contextMenu.relpath;
-    if (!targetRelpath) return;
-    const item = this.state.items.find((entry) => entry.relpath === targetRelpath);
-    if (!item) {
-      this.closeContextMenu();
-      return;
-    }
-    this.closeContextMenu();
-    if (action === "replace") {
-      this.openWorkflow(true, item);
-      return;
-    }
-    this.openWorkflow(false, item);
+    this.openContextMenu(item, button);
   }
 
   restoreContextMenu() {
@@ -1276,12 +1344,66 @@ export class AssetsPlusExplorer {
         ? CSS.escape(relpath)
         : relpath.replace(/["\\]/g, "\\$&");
     const card = this.elements.grid?.querySelector(`[data-relpath="${safeRelpath}"]`);
-    const button = card?.querySelector(".assets-plus-card-menu-button");
-    if (!button) {
+    if (!card) {
       this.closeContextMenu();
       return;
     }
-    this.positionContextMenu(button);
+    card.classList.add("menu-open");
+    if (this.state.contextMenu.anchorKind === "button") {
+      const button = card.querySelector(".assets-plus-card-more");
+      if (button) this.positionContextMenu(button);
+    }
+  }
+
+  /** Put the asset on the canvas as a Load Image/Video/Audio node at the centre of the view. */
+  async insertAssetAsNode(item) {
+    const canvas = this.app?.canvas;
+    const element = canvas?.canvas;
+    if (!canvas || !element || typeof canvas.ds?.convertOffsetToCanvas !== "function") return;
+    const rect = element.getBoundingClientRect();
+    const [canvasX, canvasY] = canvas.ds.convertOffsetToCanvas([rect.width / 2, rect.height / 2]);
+    await this.createNodeForAsset(
+      { relpath: item.relpath, tab: this.state.tab, type: item.type, filename: item.filename },
+      { canvasX, canvasY },
+      canvas
+    );
+  }
+
+  /** Save the embedded workflow (or the prompt when that is all the file has) as a .json file. */
+  async exportWorkflow(item) {
+    try {
+      const payload = await fetchJson(
+        `/assets_plus/${this.state.tab}/meta?relpath=${encodeURIComponent(item.relpath)}`
+      );
+      const metadata = payload?.metadata ?? {};
+      const data = metadata.workflow ?? metadata.prompt ?? null;
+      if (!data) {
+        this.toast({
+          severity: "warn",
+          summary: t("toast.summary"),
+          detail: t("toast.workflow_missing"),
+          life: 2500,
+        });
+        return;
+      }
+      const text = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+      const url = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = workflowFilenameForAsset(item.filename);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 10000);
+    } catch (error) {
+      warn(t("log.workflow_open_failed"), error);
+      this.toast({
+        severity: "error",
+        summary: t("toast.summary"),
+        detail: t("toast.workflow_export_failed"),
+        life: 2500,
+      });
+    }
   }
 
   setupThumbObserver() {
@@ -1414,22 +1536,35 @@ export class AssetsPlusExplorer {
         event.dataTransfer.setDragImage(thumbEl, thumbEl.offsetWidth / 2, thumbEl.offsetHeight / 2);
       }
     });
-    const hasWorkflow = item.has_workflow && (item.type === "image" || item.type === "video");
-    if (hasWorkflow) {
-      const menu = createElement("div", { className: "assets-plus-card-menu" });
-      const menuButton = createElement("button", {
-        className: "assets-plus-card-menu-button",
-        attrs: { title: t("actions.workflow_menu"), "aria-label": t("actions.workflow_menu") },
-      });
-      menuButton.innerHTML = '<i class="pi pi-bars"></i>';
-      menu.appendChild(menuButton);
-      card.appendChild(menu);
-
-      menuButton.addEventListener("click", (event) => {
-        event.stopPropagation();
-        this.toggleContextMenu(item, menuButton);
-      });
-    }
+    // Hover panel (like the stock Media Assets tab): download + more actions.
+    const menu = createElement("div", { className: "assets-plus-card-menu" });
+    const downloadButton = createElement("button", {
+      className: "assets-plus-card-menu-button assets-plus-card-download",
+      attrs: { title: t("actions.download"), "aria-label": t("actions.download") },
+    });
+    downloadButton.innerHTML = '<i class="pi pi-download"></i>';
+    const moreButton = createElement("button", {
+      className: "assets-plus-card-menu-button assets-plus-card-more",
+      attrs: { title: t("actions.more"), "aria-label": t("actions.more"), "aria-haspopup": "menu" },
+    });
+    moreButton.innerHTML = '<i class="pi pi-ellipsis-h"></i>';
+    menu.appendChild(downloadButton);
+    menu.appendChild(moreButton);
+    card.appendChild(menu);
+    downloadButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      this.closeContextMenu();
+      this.handleDownload(item);
+    });
+    moreButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      this.toggleContextMenu(item, moreButton);
+    });
+    card.addEventListener("contextmenu", (event) => {
+      if (this.state.selectionMode) return;
+      event.preventDefault();
+      this.openContextMenu(item, { x: event.clientX, y: event.clientY });
+    });
 
     card.addEventListener("mousedown", (event) => {
       // Shift+click extends a range: keep the browser from also selecting text/images between tiles.

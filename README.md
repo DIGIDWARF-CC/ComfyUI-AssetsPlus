@@ -103,9 +103,11 @@ Example:
 
 Starred items are stored the same way in `user/__assets_plus/starred.json`.
 
-## Workflow actions
+## Tile actions and workflow actions
 
-If an asset has workflow metadata, the tile menu (burger button in the top-right corner) exposes:
+Hovering a tile shows a small panel in its top-right corner: a download button and a **more** (⋯) button. The same menu opens with a right click on the tile (not in selection mode). It offers Inspect asset (the lens), Insert as node in workflow (a Load Image/Video/Audio node at the centre of the canvas), Download, the workflow actions below, Export workflow (saves the embedded workflow, or the prompt, as a `.json`), Star / Remove star, Move to Imported (Generated tab) and Delete (the usual silent-delete and starred-confirm rules apply).
+
+If an asset has workflow metadata, the menu also exposes:
 
 * **Open workflow (new tab)** — opens the workflow in a new tab (like standard Media Assets).
 * **Replace current workflow** — replaces the workflow in the current tab without creating a new one.

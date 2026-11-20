@@ -177,6 +177,18 @@
   z-index: 5;
   pointer-events: none;
 }
+/* In selection mode both states are read-only glyph indicators again. */
+.assets-plus-root.assets-plus-selection-mode .assets-plus-card .assets-plus-card-star:not(.active) {
+  background: none;
+  color: var(--assets-plus-glyph);
+  box-shadow: none;
+  padding: 4px;
+  text-shadow:
+    0 0 2px var(--assets-plus-halo),
+    0 0 3px var(--assets-plus-halo),
+    0 0 4px var(--assets-plus-halo),
+    0 0 6px var(--assets-plus-halo);
+}
 .assets-plus-selection-mode .assets-plus-card.selected {
   border-color: #22c55e;
   box-shadow: 0 0 0 1px #22c55e;
@@ -190,8 +202,7 @@
 }
 /* Glyph-only overlay buttons: system text colour with a soft halo in the system background colour,
    readable on dark, light and yellow media in both Comfy themes. */
-.assets-plus-card-star,
-.assets-plus-card-menu-button {
+.assets-plus-card-star {
   border: 0;
   background: none;
   color: var(--assets-plus-glyph);
@@ -218,6 +229,14 @@
 .assets-plus-card-star:focus-visible,
 .assets-plus-card-star.active {
   opacity: 1;
+}
+.assets-plus-card-star:not(.active) {
+  background: var(--assets-plus-glyph);
+  color: var(--assets-plus-halo);
+  border-radius: 10px;
+  padding: 5px 7px;
+  text-shadow: none;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
 }
 .assets-plus-card-star .pi {
   font-size: 16px;
@@ -285,14 +304,44 @@
 .assets-plus-action-button .pi {
   font-size: 14px;
 }
+/* Hover panel: contrasting pill (system text colour as background, system background colour as icons),
+   like the stock Media Assets tab. */
 .assets-plus-card-menu {
   position: absolute;
-  top: 4px;
-  right: 4px;
+  top: 6px;
+  right: 6px;
   z-index: 3;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 10px;
+  background: var(--assets-plus-glyph);
+  color: var(--assets-plus-halo);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.assets-plus-card:hover .assets-plus-card-menu,
+.assets-plus-card:focus-within .assets-plus-card-menu,
+.assets-plus-card.menu-open .assets-plus-card-menu {
+  opacity: 1;
+}
+.assets-plus-card-menu-button {
+  border: 0;
+  background: none;
+  color: inherit;
+  padding: 5px 7px;
+  border-radius: 8px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.assets-plus-card-menu-button:hover {
+  background: rgba(128, 128, 128, 0.28);
 }
 .assets-plus-card-menu-button .pi {
-  font-size: 16px;
+  font-size: 15px;
 }
 .assets-plus-context-menu {
   position: fixed;
@@ -303,28 +352,50 @@
 .assets-plus-context-menu.open {
   display: block;
 }
+/* The menu lives in <body>, outside .assets-plus-root, so it uses the Comfy theme variables directly. */
 .assets-plus-context-menu-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
   padding: 6px;
   border-radius: 10px;
-  border: 1px solid var(--assets-plus-border);
-  background: var(--assets-plus-control-bg);
-  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.25);
-  backdrop-filter: blur(8px);
+  border: 1px solid var(--border-color, rgba(148, 163, 184, 0.35));
+  background: var(--comfy-menu-bg, #171718);
+  color: var(--fg-color, #ffffff);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.3);
+  font-family: var(--font-family, sans-serif);
+  font-size: 14px;
 }
 .assets-plus-context-menu-item {
-  border: 1px solid rgba(148, 163, 184, 0.25);
-  background: var(--assets-plus-card-bg);
+  border: 0;
+  background: transparent;
   color: inherit;
-  padding: 6px 8px;
-  border-radius: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
   cursor: pointer;
   text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font: inherit;
 }
-.assets-plus-context-menu-item:hover {
-  background: rgba(148, 163, 184, 0.2);
+.assets-plus-context-menu-item .pi {
+  font-size: 15px;
+  width: 16px;
+  text-align: center;
+}
+.assets-plus-context-menu-item:hover,
+.assets-plus-context-menu-item:focus-visible {
+  background: color-mix(in srgb, var(--fg-color, #ffffff) 12%, transparent);
+  outline: none;
+}
+.assets-plus-context-menu-item.danger {
+  color: #ef4444;
+}
+.assets-plus-context-menu-separator {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--border-color, rgba(148, 163, 184, 0.35));
 }
 .assets-plus-overlay {
   position: fixed;
