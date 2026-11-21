@@ -86,6 +86,7 @@ Example:
 * Sticky header with icon-based actions (search toggle, selection mode, select all, invert selection, star/move/download/delete of the selection) while only the gallery area scrolls.
 * Server-side search optimized for large galleries.
 * Lazy loading of thumbnails and paged scrolling for large galleries.
+* Built for big folders: the server keeps a snapshot of the folder tree (revalidated by directory timestamps, rescanned when anything changes) and serves pages lazily from it, workflow detection only runs for the files on the page, and thumbnails are cached by the browser. The lens can jump to the oldest file or step past the loaded part of the gallery without loading everything in between. The refresh button forces a fresh scan.
 * Event-driven updates when ComfyUI emits execution or upload events (no polling).
 * Expanded media support from @svilendotorg: additional image/video formats, audio playback in the overlay, GLB/GLTF mesh previews, and arrow-key overlay navigation.
 

@@ -1,17 +1,48 @@
-import { buildViewUrl, clamp, getFileExtension, warn, log } from './utils.js';
+import { buildViewUrl, clamp, fetchJson, getFileExtension, warn, log } from './utils.js';
 import { OUTPUT_TAB, INPUT_TAB, OVERLAY_COMMANDS } from './constants.js';
 import { t } from './i18n.js';
 
 export const overlayAPI = {
   getOverlayItem() {
     if (!this.state.overlay.relpath) return null;
-    return this.state.items.find((item) => item.relpath === this.state.overlay.relpath) || null;
+    return this.findLensItem(this.state.overlay.relpath);
+  },
+
+  /** An item the gallery loaded, or one only the lens knows about (its server-provided window). */
+  findLensItem(relpath) {
+    return (
+      this.state.items.find((item) => item.relpath === relpath) ||
+      this.state.overlay.window?.items.find((item) => item.relpath === relpath) ||
+      null
+    );
+  },
+
+  /** Where the lens item sits: in the gallery's loaded items, or in the lens window. */
+  lensPosition(relpath) {
+    const gridIndex = this.state.items.findIndex((item) => item.relpath === relpath);
+    if (gridIndex !== -1) return { list: this.state.items, index: gridIndex, inGrid: true };
+    const win = this.state.overlay.window;
+    const windowIndex = win ? win.items.findIndex((item) => item.relpath === relpath) : -1;
+    if (windowIndex === -1) return null;
+    return { list: win.items, index: windowIndex, inGrid: false };
+  },
+
+  /** True when there is something before (-1) or after (1) the lens item, loaded or still on the server. */
+  lensHasNeighbor(direction) {
+    const position = this.lensPosition(this.state.overlay.relpath);
+    if (!position) return false;
+    const { list, index, inGrid } = position;
+    if (list[index + direction]) return true;
+    if (inGrid) return direction > 0 && this.state.hasMore;
+    const win = this.state.overlay.window;
+    return direction > 0 ? win.hasAfter : win.hasBefore;
   },
 
   openOverlay(relpath) {
     if (!relpath) return;
     const item = this.state.items.find((entry) => entry.relpath === relpath);
     if (!item) return;
+    this.state.overlay.window = null;
     this.state.overlay.relpath = relpath;
     this.resetOverlayZoom({ resetFit: true });
     this.elements.overlay.classList.add("active");
@@ -22,6 +53,7 @@ export const overlayAPI = {
   closeOverlay() {
     this.elements.overlay.classList.remove("active");
     this.state.overlay.relpath = null;
+    this.state.overlay.window = null;
     this.overlayImageLoadId += 1;
     this.resetOverlayZoom({ resetFit: true });
     this.updateOverlayMeta(null);
@@ -62,21 +94,113 @@ export const overlayAPI = {
     );
   },
 
-  navigateOverlay(direction) {
-    const items = this.getFilteredItems();
-    if (!items.length || !this.state.overlay.relpath) return;
-    const index = items.findIndex((item) => item.relpath === this.state.overlay.relpath);
-    if (index === -1) return;
-    let nextIndex = index + direction;
-    if (direction === "first") {
-      nextIndex = 0;
-    } else if (direction === "last") {
-      nextIndex = items.length - 1;
+  /**
+   * Ask the server for a slice of the gallery around a file (or at its tail), so the lens can go anywhere
+   * without the grid having loaded every page in between. The result is only kept if the lens item can
+   * still be resolved afterwards (the user may have moved on while the request was running).
+   */
+  async fetchLensWindow({ relpath = null, anchor = null, before = 10, after = 10 } = {}) {
+    const params = this.buildListParams();
+    ["limit", "cursor", "since"].forEach((name) => params.delete(name));
+    if (relpath) params.set("relpath", relpath);
+    if (anchor) params.set("anchor", anchor);
+    params.set("before", String(before));
+    params.set("after", String(after));
+    const payload = await fetchJson(`/assets_plus/${this.state.tab}/window?${params.toString()}`);
+    if (!payload.found && relpath) return null;
+    const win = {
+      items: payload.items || [],
+      start: payload.start,
+      total: payload.total,
+      hasBefore: Boolean(payload.has_before),
+      hasAfter: Boolean(payload.has_after),
+    };
+    const lens = this.state.overlay.relpath;
+    const stillResolvable =
+      !lens || win.items.some((item) => item.relpath === lens) || this.state.items.some((item) => item.relpath === lens);
+    if (stillResolvable) this.state.overlay.window = win;
+    return win;
+  },
+
+  async lensNeighbor(current, direction) {
+    const position = this.lensPosition(current);
+    if (!position) return null;
+    const neighbor = position.list[position.index + direction];
+    if (neighbor) return neighbor;
+    if (position.inGrid) {
+      if (direction > 0 && this.state.hasMore) {
+        await this.loadNextPage();
+        return this.state.items[position.index + 1] || null;
+      }
+      return null;
     }
-    if (nextIndex < 0 || nextIndex >= items.length) return;
-    this.state.overlay.relpath = items[nextIndex].relpath;
-    this.resetOverlayZoom({ resetFit: true });
-    this.updateOverlayView();
+    const win = this.state.overlay.window;
+    if ((direction > 0 && win.hasAfter) || (direction < 0 && win.hasBefore)) {
+      await this.fetchLensWindow({ relpath: current, before: 20, after: 20 });
+      const fresh = this.lensPosition(current);
+      return fresh?.list[fresh.index + direction] || null;
+    }
+    return null;
+  },
+
+  async lensLastItem() {
+    if (!this.state.hasMore) {
+      this.state.overlay.window = null;
+      return this.state.items[this.state.items.length - 1] || null;
+    }
+    const win = await this.fetchLensWindow({ anchor: "last", before: 20 });
+    return win?.items[win.items.length - 1] || null;
+  },
+
+  /** Keep the next/previous items ready so stepping through the lens never waits for the server. */
+  prefetchLens() {
+    const relpath = this.state.overlay.relpath;
+    const position = relpath ? this.lensPosition(relpath) : null;
+    if (!position || this.lensPrefetching) return;
+    const nearEnd = position.list.length - 1 - position.index <= 3;
+    const nearStart = position.index <= 3;
+    if (position.inGrid) {
+      if (nearEnd && this.state.hasMore && !this.state.loading && !this.state.loadingMore) {
+        this.loadNextPage();
+      }
+      return;
+    }
+    const win = this.state.overlay.window;
+    if ((nearEnd && win.hasAfter) || (nearStart && win.hasBefore)) {
+      this.lensPrefetching = true;
+      this.fetchLensWindow({ relpath, before: 20, after: 20 })
+        .catch((error) => warn("lens prefetch failed", error))
+        .finally(() => {
+          this.lensPrefetching = false;
+        });
+    }
+  },
+
+  async navigateOverlay(direction) {
+    const current = this.state.overlay.relpath;
+    if (!current || this.lensNavigating) return;
+    this.lensNavigating = true;
+    try {
+      let target = null;
+      if (direction === "first") {
+        this.state.overlay.window = null;
+        target = this.state.items[0] || null;
+      } else if (direction === "last") {
+        target = await this.lensLastItem();
+      } else {
+        target = await this.lensNeighbor(current, direction);
+      }
+      if (target && this.state.overlay.relpath === current) {
+        this.state.overlay.relpath = target.relpath;
+        this.resetOverlayZoom({ resetFit: true });
+        this.updateOverlayView();
+        this.prefetchLens();
+      }
+    } catch (error) {
+      warn("Lens navigation failed", error);
+    } finally {
+      this.lensNavigating = false;
+    }
   },
 
   updateOverlayView() {
@@ -87,10 +211,8 @@ export const overlayAPI = {
       return;
     }
     const { overlayInfo, overlayPrev, overlayNext, overlayImage, overlayVideo, overlayMedia } = this.elements;
-    const items = this.getFilteredItems();
-    const index = items.findIndex((entry) => entry.relpath === item.relpath);
-    overlayPrev.disabled = index <= 0;
-    overlayNext.disabled = index === -1 || index >= items.length - 1;
+    overlayPrev.disabled = !this.lensHasNeighbor(-1);
+    overlayNext.disabled = !this.lensHasNeighbor(1);
 
     const dateLabel = new Date(item.mtime * 1000).toLocaleString();
     overlayInfo.textContent = `${item.filename} • ${dateLabel}`;

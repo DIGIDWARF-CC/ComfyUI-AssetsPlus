@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
 import os
 import shutil
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -18,11 +20,14 @@ from .storage import (
     starred_key, update_starred,
 )
 from .paths import get_output_directory, get_input_directory, get_i18n_directory, resolve_relpath, load_translation_file, LANGUAGE_CODE_RE
-from .scanner import list_directory_items, scan_files, _classify_kind, _placeholder_png
+from .scanner import _classify_kind, _placeholder_png
+from .listing import (
+    Filters, R_MTIME, R_REL, R_SIZE, Snapshot, build_items, get_snapshot, invalidate, iter_visible,
+)
 from .marks import MarkScope, reconcile_marks
 from .metadata import read_metadata, build_thumb_cache_key, remove_thumb_cache_entries, clear_thumb_cache
 from .trash import move_to_trash
-from .pagination import parse_cursor, encode_cursor, apply_cursor_filter, apply_since_filter
+from .pagination import parse_cursor, encode_cursor
 
 LOGGER = logging.getLogger("assets_plus")
 DELETE_MODES = frozenset({"trash", "delete", "hide"})
@@ -97,19 +102,25 @@ async def _thumb_response(request: web.Request, base_dir: Path) -> web.StreamRes
     if not path.is_file():
         raise web.HTTPNotFound(text="Asset not found")
 
-    def respond(file_path: Path) -> web.StreamResponse:
+    # The client puts the file's mtime and size into ``v``: a changed file gets a new URL, so a versioned
+    # response can be cached by the browser for good and the grid never revalidates thumbnails.
+    immutable = bool(params.get("v"))
+
+    def respond(file_path: Path, *, cacheable: bool = True) -> web.StreamResponse:
         resp = web.FileResponse(path=file_path)
         _set_content_type(resp, file_path)
+        if immutable and cacheable:
+            resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         return resp
 
     if path.suffix.lower() in {".mp4", ".webm"}:
         return respond(path)
 
-    def placeholder_response(label: str) -> web.StreamResponse:
+    def placeholder_response(label: str, *, cacheable: bool = True) -> web.StreamResponse:
         placeholder = _placeholder_png(label, width, height)
         if placeholder is None:
             raise web.HTTPInternalServerError(text="Failed to generate placeholder")
-        return respond(placeholder)
+        return respond(placeholder, cacheable=cacheable)
 
     kind = _classify_kind(path)
     if kind != "image":
@@ -125,7 +136,7 @@ async def _thumb_response(request: web.Request, base_dir: Path) -> web.StreamRes
         await _generate_thumbnail(path, width, height, cache_path)
     except Exception:  # unreadable/huge/odd-mode image or timeout: show a placeholder tile
         LOGGER.warning("[Assets+ Explorer] Thumbnail failed for %s", relpath, exc_info=True)
-        return placeholder_response("other")
+        return placeholder_response("other", cacheable=False)  # a later attempt may succeed
     return respond(cache_path)
 
 
@@ -183,6 +194,7 @@ def delete_assets(
     if mode == "hide" and hidden_updates:
         update_hidden(lambda h: {**h, **hidden_updates})
     elif removed:
+        invalidate(base_dir)
         # Files that are really gone (trash / permanent delete) lose their star.
         scope = "input" if hidden_prefix == "input/" else "output"
         gone = {starred_key(scope, relpath) for relpath in removed}
@@ -190,8 +202,19 @@ def delete_assets(
     return removed, failed, actual_modes
 
 
-def _build_list_response(base_dir: Path, hidden_prefix: str, params: dict[str, str]) -> dict[str, Any]:
-    """Shared logic for output_list and input_list handlers."""
+TRUE_VALUES = {"1", "true", "True"}
+
+
+@dataclass
+class _View:
+    """Everything a listing or window request needs, after the indexes were reconciled."""
+
+    snapshot: Snapshot
+    filters: Filters
+    starred_first: bool
+
+
+def _prepare_view(base_dir: Path, hidden_prefix: str, params: dict[str, str]) -> _View:
     config = load_config()
 
     extensions_param = params.get("extensions")
@@ -213,62 +236,68 @@ def _build_list_response(base_dir: Path, hidden_prefix: str, params: dict[str, s
         scan_depth = config.scan_depth
     if scan_depth is not None and scan_depth < 0:
         scan_depth = None
-
     recursive = params.get("recursive", "1") not in {"0", "false", "False"}
-    limit = _int_param(params, "limit", config.list_limit, minimum=0)
-    cursor = parse_cursor(params.get("cursor"))
-    query = params.get("query") or params.get("q")
-    since_param = params.get("since")
-    since = None
-    if since_param is not None:
-        try:
-            since = int(since_param)
-        except ValueError:
-            since = None
-
-    starred_first = params.get("starred_first", "0") in {"1", "true", "True"}
     scope_name = "input" if hidden_prefix == "input/" else "output"
 
-    files = scan_files(base_dir, extensions, recursive, scan_depth)
-    scanned = {relpath: (mtime, size) for relpath, _, mtime, size in files}
+    snapshot = get_snapshot(
+        base_dir, extensions, recursive, scan_depth, fresh=params.get("fresh", "0") in TRUE_VALUES
+    )
+    scanned = snapshot.scanned
     hidden_scope = MarkScope(
         base_dir, prefix=hidden_prefix, other_prefix=None if hidden_prefix else "input/"
     )
     starred_scope = MarkScope(base_dir, prefix=f"{scope_name}/")
-    hidden = update_hidden(
-        lambda h: reconcile_marks(h, hidden_scope, scanned, strict=True)
+    hidden = update_hidden(lambda h: reconcile_marks(h, hidden_scope, scanned, strict=True))
+    starred_entries = update_starred(lambda s: reconcile_marks(s, starred_scope, scanned, strict=False))
+
+    # A hidden entry only hides the file it was recorded for (same mtime and size).
+    hidden_relpaths = set()
+    for key, entry in hidden.items():
+        if not hidden_scope.owns(key):
+            continue
+        relpath = hidden_scope.relpath_of(key)
+        position = snapshot.index.get(relpath)
+        if position is not None:
+            row = snapshot.rows[position]
+            if row[R_MTIME] == entry.mtime and row[R_SIZE] == entry.size:
+                hidden_relpaths.add(relpath)
+    starred = {starred_scope.relpath_of(key) for key in starred_entries if starred_scope.owns(key)}
+
+    query = params.get("query") or params.get("q") or ""
+    return _View(
+        snapshot=snapshot,
+        filters=Filters(hidden=hidden_relpaths, starred=starred, query=query.strip().lower()),
+        starred_first=params.get("starred_first", "0") in TRUE_VALUES,
     )
-    starred_entries = update_starred(
-        lambda s: reconcile_marks(s, starred_scope, scanned, strict=False)
+
+
+def _build_list_response(base_dir: Path, hidden_prefix: str, params: dict[str, str]) -> dict[str, Any]:
+    """One page of the gallery (cursor paging) or everything newer than ``since``."""
+    config = load_config()
+    limit = _int_param(params, "limit", config.list_limit, minimum=0)
+    cursor = parse_cursor(params.get("cursor"))
+    since = None
+    if params.get("since") is not None:
+        try:
+            since = int(params["since"])
+        except ValueError:
+            since = None
+
+    view = _prepare_view(base_dir, hidden_prefix, params)
+    latest_row = next(iter_visible(view.snapshot, view.filters), None)
+    latest_mtime = latest_row[R_MTIME] if latest_row else 0
+
+    ordered = iter_visible(
+        view.snapshot, view.filters, starred_first=view.starred_first, cursor=cursor, since=since
     )
-    starred = {
-        starred_scope.relpath_of(key) for key in starred_entries if starred_scope.owns(key)
-    }
-
-    items = list_directory_items(
-        base_dir, extensions, recursive, scan_depth,
-        hidden=hidden, hidden_prefix=hidden_prefix, query=query,
-        files=files, starred=starred,
-    )
-    latest_mtime = items[0]["mtime"] if items else 0
-
-    if starred_first:
-        items.sort(key=lambda item: not item["starred"])  # stable: newest-first kept inside each group
-
-    if since is not None:
-        items = apply_since_filter(items, since)
-    else:
-        items = apply_cursor_filter(items, cursor)
-
-    has_more = False
+    rows = list(itertools.islice(ordered, limit + 1 if limit else None))
+    has_more = bool(limit) and len(rows) > limit
     if limit:
-        has_more = len(items) > limit
-        items = items[:limit]
-
+        rows = rows[:limit]
+    items = build_items(base_dir, rows, view.filters.starred)
     next_cursor = (
-        encode_cursor(items[-1], starred_first) if items else params.get("cursor") or ""
+        encode_cursor(items[-1], view.starred_first) if items else params.get("cursor") or ""
     )
-
     return {
         "items": items,
         "cursor": next_cursor,
@@ -277,11 +306,38 @@ def _build_list_response(base_dir: Path, hidden_prefix: str, params: dict[str, s
     }
 
 
+def _build_window_response(base_dir: Path, hidden_prefix: str, params: dict[str, str]) -> dict[str, Any]:
+    """A slice of the gallery around one file (or at its head/tail), for lens navigation.
+
+    The lens must be able to jump anywhere (e.g. to the oldest file) without the gallery having loaded
+    the pages in between, so it asks for a window and keeps it as its own small cache.
+    """
+    before = _int_param(params, "before", 10, minimum=0, maximum=100)
+    after = _int_param(params, "after", 10, minimum=0, maximum=100)
+    view = _prepare_view(base_dir, hidden_prefix, params)
+    visible = list(iter_visible(view.snapshot, view.filters, starred_first=view.starred_first))
+    total = len(visible)
+    relpath = params.get("relpath")
+    if relpath:
+        position = next((index for index, row in enumerate(visible) if row[R_REL] == relpath), None)
+        if position is None:
+            return {"found": False, "items": [], "start": 0, "total": total,
+                    "has_before": False, "has_after": False}
+        start, end = max(0, position - before), min(total, position + after + 1)
+    elif params.get("anchor") == "last":
+        start, end = max(0, total - (before + 1)), total
+    else:
+        start, end = 0, min(total, after + 1)
+    items = build_items(base_dir, visible[start:end], view.filters.starred)
+    return {"found": True, "items": items, "start": start, "total": total,
+            "has_before": start > 0, "has_after": end < total}
+
+
 @PromptServer.instance.routes.get("/assets_plus/output/list")
 async def output_list(request: web.Request) -> web.Response:
     params = request.rel_url.query
     LOGGER.info("Assets+ output list request params=%s", dict(params))
-    result = _build_list_response(get_output_directory(), "", params)
+    result = await asyncio.to_thread(_build_list_response, get_output_directory(), "", params)
     return web.json_response(result)
 
 
@@ -289,7 +345,19 @@ async def output_list(request: web.Request) -> web.Response:
 async def input_list(request: web.Request) -> web.Response:
     params = request.rel_url.query
     LOGGER.info("Assets+ input list request params=%s", dict(params))
-    result = _build_list_response(get_input_directory(), "input/", params)
+    result = await asyncio.to_thread(_build_list_response, get_input_directory(), "input/", params)
+    return web.json_response(result)
+
+
+@PromptServer.instance.routes.get("/assets_plus/output/window")
+async def output_window(request: web.Request) -> web.Response:
+    result = await asyncio.to_thread(_build_window_response, get_output_directory(), "", request.rel_url.query)
+    return web.json_response(result)
+
+
+@PromptServer.instance.routes.get("/assets_plus/input/window")
+async def input_window(request: web.Request) -> web.Response:
+    result = await asyncio.to_thread(_build_window_response, get_input_directory(), "input/", request.rel_url.query)
     return web.json_response(result)
 
 
@@ -537,6 +605,8 @@ def move_assets_to_input(
         transfers.append((relpath, destination.name, int(stat.st_mtime), stat.st_size))
 
     if transfers:
+        invalidate(output_dir)
+        invalidate(input_dir)
         gone_hidden = {relpath for relpath, _, _, _ in transfers}
 
         def move_starred(entries: dict[str, HiddenEntry]) -> dict[str, HiddenEntry]:

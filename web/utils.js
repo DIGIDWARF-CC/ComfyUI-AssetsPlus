@@ -109,12 +109,14 @@ export const buildViewUrl = (relpath, directory) => {
   return `/view?${params.toString()}`;
 };
 
-export const buildThumbUrl = (relpath, directory, size) => {
+export const buildThumbUrl = (relpath, directory, size, version = "") => {
   const params = new URLSearchParams({
     relpath,
     w: String(size),
     h: String(size),
   });
+  // Changes whenever the file changes, which lets the server mark the response as cacheable for good.
+  if (version) params.set("v", String(version));
   return `/assets_plus/${directory}/thumb?${params.toString()}`;
 };
 

@@ -60,6 +60,7 @@ export class AssetsPlusExplorer {
       },
       overlay: {
         relpath: null,
+        window: null,
         zoom: 1,
         fitZoom: 1,
         imageWidth: 0,
@@ -454,7 +455,8 @@ export class AssetsPlusExplorer {
 
     this.updateSearchVisibility();
 
-    refreshButton.addEventListener("click", () => this.refreshList());
+    // The refresh button is the user saying "look again": bypass the server's folder snapshot.
+    refreshButton.addEventListener("click", () => this.refreshList({ fresh: true }));
     outputTab.addEventListener("click", () => this.setTab(OUTPUT_TAB));
     inputTab.addEventListener("click", () => this.setTab(INPUT_TAB));
     searchToggle.addEventListener("click", () => this.toggleSearchVisibility());
@@ -1472,7 +1474,7 @@ export class AssetsPlusExplorer {
     selectMark.innerHTML = '<i class="pi pi-check"></i>';
 
     const thumb = createElement("div", { className: "assets-plus-thumb" });
-    const thumbUrl = buildThumbUrl(item.relpath, this.state.tab, thumbnailSize);
+    const thumbUrl = buildThumbUrl(item.relpath, this.state.tab, thumbnailSize, `${item.mtime}-${item.size}`);
     const extension = getFileExtension(item.filename);
     if (item.type === "video" && VIDEO_THUMB_EXTENSIONS.has(extension)) {
       const video = document.createElement("video");
@@ -1638,9 +1640,10 @@ export class AssetsPlusExplorer {
     }
   }
 
-  buildListParams({ cursor = "", since = null } = {}) {
+  buildListParams({ cursor = "", since = null, fresh = false } = {}) {
     const settings = this.getSettingsSnapshot();
     const params = new URLSearchParams();
+    if (fresh) params.set("fresh", "1");
     params.set("limit", String(settings.listLimit));
     if (settings.extensions?.length) params.set("extensions", settings.extensions.join(","));
     if (settings.scanDepth !== null && settings.scanDepth !== undefined) {
@@ -1684,17 +1687,59 @@ export class AssetsPlusExplorer {
     if (!items.length) return;
     const map = new Map(this.state.items.map((item) => [item.relpath, item]));
     items.forEach((item) => map.set(item.relpath, item));
+    const previousCount = this.state.items.length;
+    const known = new Set(this.state.items.map((item) => item.relpath));
     const merged = this.sortItems(Array.from(map.values()));
     this.state.items = merged;
     const available = new Set(merged.map((item) => item.relpath));
     this.state.selected = new Set(
       Array.from(this.state.selected).filter((relpath) => available.has(relpath))
     );
-    this.renderGrid({ reset: true });
+    const grid = this.elements.grid;
+    if (grid.children.length !== previousCount) {
+      this.renderGrid({ reset: true });
+      return;
+    }
+    // The grid shows exactly the previous items: insert the new tiles in place, leave the rest alone.
+    const { thumbnailSize } = this.getSettingsSnapshot();
+    merged.forEach((item, index) => {
+      if (known.has(item.relpath)) return;
+      grid.insertBefore(this.buildCard(item, thumbnailSize), grid.children[index] || null);
+    });
+    this.renderGrid();
+    this.updateActionsBar();
+    this.restoreContextMenu();
   }
 
-  async loadPage({ reset = false } = {}) {
-    const params = this.buildListParams({ cursor: reset ? "" : this.state.cursor });
+  /** Remove the tiles of the given relpaths without rebuilding the grid. */
+  removeCardsFromGrid(removed) {
+    this.elements.grid.querySelectorAll(".assets-plus-card").forEach((card) => {
+      if (!removed.has(card.getAttribute("data-relpath"))) return;
+      card.querySelectorAll("[data-src]").forEach((media) => this.thumbObserver?.unobserve(media));
+      card.remove();
+    });
+    this.renderGrid();
+    this.updateActionsBar();
+    this.restoreContextMenu();
+  }
+
+  /** Move the tiles of items whose position changed (e.g. a toggled star with "starred first") in place. */
+  repositionCards(changedRelpaths) {
+    const grid = this.elements.grid;
+    const cards = new Map();
+    grid.querySelectorAll(".assets-plus-card").forEach((card) => {
+      const relpath = card.getAttribute("data-relpath");
+      if (changedRelpaths.has(relpath)) cards.set(relpath, card);
+    });
+    cards.forEach((card) => card.remove());
+    this.state.items.forEach((item, index) => {
+      const card = cards.get(item.relpath);
+      if (card) grid.insertBefore(card, grid.children[index] || null);
+    });
+  }
+
+  async loadPage({ reset = false, fresh = false } = {}) {
+    const params = this.buildListParams({ cursor: reset ? "" : this.state.cursor, fresh });
     const payload = await fetchJson(`/assets_plus/${this.state.tab}/list?${params.toString()}`);
     let items = payload.items || [];
     if (reset) {
@@ -1722,7 +1767,7 @@ export class AssetsPlusExplorer {
     }
   }
 
-  async refreshList() {
+  async refreshList({ fresh = false } = {}) {
     this.state.loading = true;
     this.state.loadingMore = false;
     this.state.error = null;
@@ -1734,7 +1779,7 @@ export class AssetsPlusExplorer {
     this.clearSelection();
     this.renderGrid({ reset: true });
     try {
-      await this.loadPage({ reset: true });
+      await this.loadPage({ reset: true, fresh });
     } catch (error) {
       this.state.error = t("status.load_error");
       this.renderGrid({ reset: true });
@@ -1878,9 +1923,11 @@ export class AssetsPlusExplorer {
       });
       const updated = new Set(payload.updated || []);
       if (!updated.size) throw new Error("nothing updated");
-      this.state.items.forEach((item) => {
+      const apply = (item) => {
         if (updated.has(item.relpath)) item.starred = starred;
-      });
+      };
+      this.state.items.forEach(apply);
+      this.state.overlay.window?.items.forEach(apply);
       this.refreshStarVisuals(updated);
     } catch (error) {
       warn(t("toast.star_failed"), error);
@@ -1896,9 +1943,17 @@ export class AssetsPlusExplorer {
   refreshStarVisuals(changedRelpaths) {
     const { starredFirst } = this.getSettingsSnapshot();
     if (starredFirst) {
-      // Order depends on the star: re-sort and rebuild the grid.
+      // Order depends on the star: re-sort, then move only the affected tiles and repaint their stars.
       this.state.items = this.sortItems(this.state.items);
-      this.renderGrid({ reset: true });
+      this.repositionCards(changedRelpaths);
+      this.elements.grid.querySelectorAll(".assets-plus-card").forEach((card) => {
+        const relpath = card.getAttribute("data-relpath");
+        if (!changedRelpaths.has(relpath)) return;
+        const item = this.state.items.find((entry) => entry.relpath === relpath);
+        const starred = Boolean(item?.starred);
+        card.classList.toggle("starred", starred);
+        this.applyStarState(card.querySelector(".assets-plus-card-star"), starred);
+      });
     } else {
       this.elements.grid.querySelectorAll(".assets-plus-card").forEach((card) => {
         const relpath = card.getAttribute("data-relpath");
@@ -1921,18 +1976,21 @@ export class AssetsPlusExplorer {
     const lensRemoved = Boolean(overlayRelpath && removed.has(overlayRelpath));
     let nextOverlayRelpath = null;
     if (lensRemoved) {
-      const filtered = this.getFilteredItems();
-      const index = filtered.findIndex((entry) => entry.relpath === overlayRelpath);
-      if (index !== -1) {
-        for (let i = index + 1; i < filtered.length && !nextOverlayRelpath; i += 1) {
-          if (!removed.has(filtered[i].relpath)) nextOverlayRelpath = filtered[i].relpath;
+      // The lens item may live in the gallery's items or only in the lens window: use whichever has it.
+      const position = this.lensPosition(overlayRelpath);
+      if (position) {
+        const { list, index } = position;
+        for (let i = index + 1; i < list.length && !nextOverlayRelpath; i += 1) {
+          if (!removed.has(list[i].relpath)) nextOverlayRelpath = list[i].relpath;
         }
         for (let i = index - 1; i >= 0 && !nextOverlayRelpath; i -= 1) {
-          if (!removed.has(filtered[i].relpath)) nextOverlayRelpath = filtered[i].relpath;
+          if (!removed.has(list[i].relpath)) nextOverlayRelpath = list[i].relpath;
         }
       }
     }
 
+    const nextWindow = this.state.overlay.window;
+    if (nextWindow) nextWindow.items = nextWindow.items.filter((item) => !removed.has(item.relpath));
     this.state.items = this.state.items.filter((item) => !removed.has(item.relpath));
     relpaths.forEach((relpath) => this.state.selected.delete(relpath));
     this.state.latestMtime = this.state.items.reduce(
@@ -1945,8 +2003,8 @@ export class AssetsPlusExplorer {
         this.closeOverlay();
       }
     }
-    this.renderGrid({ reset: true });
-    if (nextOverlayRelpath && this.state.items.some((item) => item.relpath === nextOverlayRelpath)) {
+    this.removeCardsFromGrid(removed);
+    if (nextOverlayRelpath && this.findLensItem(nextOverlayRelpath)) {
       this.state.overlay.relpath = nextOverlayRelpath;
       this.updateOverlayView();
     }
