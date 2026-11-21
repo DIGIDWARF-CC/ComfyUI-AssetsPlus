@@ -102,19 +102,25 @@ async def _thumb_response(request: web.Request, base_dir: Path) -> web.StreamRes
     if not path.is_file():
         raise web.HTTPNotFound(text="Asset not found")
 
-    def respond(file_path: Path) -> web.StreamResponse:
+    # The client puts the file's mtime and size into ``v``: a changed file gets a new URL, so a versioned
+    # response can be cached by the browser for good and the grid never revalidates thumbnails.
+    immutable = bool(params.get("v"))
+
+    def respond(file_path: Path, *, cacheable: bool = True) -> web.StreamResponse:
         resp = web.FileResponse(path=file_path)
         _set_content_type(resp, file_path)
+        if immutable and cacheable:
+            resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         return resp
 
     if path.suffix.lower() in {".mp4", ".webm"}:
         return respond(path)
 
-    def placeholder_response(label: str) -> web.StreamResponse:
+    def placeholder_response(label: str, *, cacheable: bool = True) -> web.StreamResponse:
         placeholder = _placeholder_png(label, width, height)
         if placeholder is None:
             raise web.HTTPInternalServerError(text="Failed to generate placeholder")
-        return respond(placeholder)
+        return respond(placeholder, cacheable=cacheable)
 
     kind = _classify_kind(path)
     if kind != "image":
@@ -130,7 +136,7 @@ async def _thumb_response(request: web.Request, base_dir: Path) -> web.StreamRes
         await _generate_thumbnail(path, width, height, cache_path)
     except Exception:  # unreadable/huge/odd-mode image or timeout: show a placeholder tile
         LOGGER.warning("[Assets+ Explorer] Thumbnail failed for %s", relpath, exc_info=True)
-        return placeholder_response("other")
+        return placeholder_response("other", cacheable=False)  # a later attempt may succeed
     return respond(cache_path)
 
 

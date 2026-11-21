@@ -1474,7 +1474,7 @@ export class AssetsPlusExplorer {
     selectMark.innerHTML = '<i class="pi pi-check"></i>';
 
     const thumb = createElement("div", { className: "assets-plus-thumb" });
-    const thumbUrl = buildThumbUrl(item.relpath, this.state.tab, thumbnailSize);
+    const thumbUrl = buildThumbUrl(item.relpath, this.state.tab, thumbnailSize, `${item.mtime}-${item.size}`);
     const extension = getFileExtension(item.filename);
     if (item.type === "video" && VIDEO_THUMB_EXTENSIONS.has(extension)) {
       const video = document.createElement("video");
@@ -1687,13 +1687,55 @@ export class AssetsPlusExplorer {
     if (!items.length) return;
     const map = new Map(this.state.items.map((item) => [item.relpath, item]));
     items.forEach((item) => map.set(item.relpath, item));
+    const previousCount = this.state.items.length;
+    const known = new Set(this.state.items.map((item) => item.relpath));
     const merged = this.sortItems(Array.from(map.values()));
     this.state.items = merged;
     const available = new Set(merged.map((item) => item.relpath));
     this.state.selected = new Set(
       Array.from(this.state.selected).filter((relpath) => available.has(relpath))
     );
-    this.renderGrid({ reset: true });
+    const grid = this.elements.grid;
+    if (grid.children.length !== previousCount) {
+      this.renderGrid({ reset: true });
+      return;
+    }
+    // The grid shows exactly the previous items: insert the new tiles in place, leave the rest alone.
+    const { thumbnailSize } = this.getSettingsSnapshot();
+    merged.forEach((item, index) => {
+      if (known.has(item.relpath)) return;
+      grid.insertBefore(this.buildCard(item, thumbnailSize), grid.children[index] || null);
+    });
+    this.renderGrid();
+    this.updateActionsBar();
+    this.restoreContextMenu();
+  }
+
+  /** Remove the tiles of the given relpaths without rebuilding the grid. */
+  removeCardsFromGrid(removed) {
+    this.elements.grid.querySelectorAll(".assets-plus-card").forEach((card) => {
+      if (!removed.has(card.getAttribute("data-relpath"))) return;
+      card.querySelectorAll("[data-src]").forEach((media) => this.thumbObserver?.unobserve(media));
+      card.remove();
+    });
+    this.renderGrid();
+    this.updateActionsBar();
+    this.restoreContextMenu();
+  }
+
+  /** Move the tiles of items whose position changed (e.g. a toggled star with "starred first") in place. */
+  repositionCards(changedRelpaths) {
+    const grid = this.elements.grid;
+    const cards = new Map();
+    grid.querySelectorAll(".assets-plus-card").forEach((card) => {
+      const relpath = card.getAttribute("data-relpath");
+      if (changedRelpaths.has(relpath)) cards.set(relpath, card);
+    });
+    cards.forEach((card) => card.remove());
+    this.state.items.forEach((item, index) => {
+      const card = cards.get(item.relpath);
+      if (card) grid.insertBefore(card, grid.children[index] || null);
+    });
   }
 
   async loadPage({ reset = false, fresh = false } = {}) {
@@ -1901,9 +1943,17 @@ export class AssetsPlusExplorer {
   refreshStarVisuals(changedRelpaths) {
     const { starredFirst } = this.getSettingsSnapshot();
     if (starredFirst) {
-      // Order depends on the star: re-sort and rebuild the grid.
+      // Order depends on the star: re-sort, then move only the affected tiles and repaint their stars.
       this.state.items = this.sortItems(this.state.items);
-      this.renderGrid({ reset: true });
+      this.repositionCards(changedRelpaths);
+      this.elements.grid.querySelectorAll(".assets-plus-card").forEach((card) => {
+        const relpath = card.getAttribute("data-relpath");
+        if (!changedRelpaths.has(relpath)) return;
+        const item = this.state.items.find((entry) => entry.relpath === relpath);
+        const starred = Boolean(item?.starred);
+        card.classList.toggle("starred", starred);
+        this.applyStarState(card.querySelector(".assets-plus-card-star"), starred);
+      });
     } else {
       this.elements.grid.querySelectorAll(".assets-plus-card").forEach((card) => {
         const relpath = card.getAttribute("data-relpath");
@@ -1953,7 +2003,7 @@ export class AssetsPlusExplorer {
         this.closeOverlay();
       }
     }
-    this.renderGrid({ reset: true });
+    this.removeCardsFromGrid(removed);
     if (nextOverlayRelpath && this.findLensItem(nextOverlayRelpath)) {
       this.state.overlay.relpath = nextOverlayRelpath;
       this.updateOverlayView();
