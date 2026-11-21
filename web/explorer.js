@@ -60,6 +60,7 @@ export class AssetsPlusExplorer {
       },
       overlay: {
         relpath: null,
+        window: null,
         zoom: 1,
         fitZoom: 1,
         imageWidth: 0,
@@ -454,7 +455,8 @@ export class AssetsPlusExplorer {
 
     this.updateSearchVisibility();
 
-    refreshButton.addEventListener("click", () => this.refreshList());
+    // The refresh button is the user saying "look again": bypass the server's folder snapshot.
+    refreshButton.addEventListener("click", () => this.refreshList({ fresh: true }));
     outputTab.addEventListener("click", () => this.setTab(OUTPUT_TAB));
     inputTab.addEventListener("click", () => this.setTab(INPUT_TAB));
     searchToggle.addEventListener("click", () => this.toggleSearchVisibility());
@@ -1638,9 +1640,10 @@ export class AssetsPlusExplorer {
     }
   }
 
-  buildListParams({ cursor = "", since = null } = {}) {
+  buildListParams({ cursor = "", since = null, fresh = false } = {}) {
     const settings = this.getSettingsSnapshot();
     const params = new URLSearchParams();
+    if (fresh) params.set("fresh", "1");
     params.set("limit", String(settings.listLimit));
     if (settings.extensions?.length) params.set("extensions", settings.extensions.join(","));
     if (settings.scanDepth !== null && settings.scanDepth !== undefined) {
@@ -1693,8 +1696,8 @@ export class AssetsPlusExplorer {
     this.renderGrid({ reset: true });
   }
 
-  async loadPage({ reset = false } = {}) {
-    const params = this.buildListParams({ cursor: reset ? "" : this.state.cursor });
+  async loadPage({ reset = false, fresh = false } = {}) {
+    const params = this.buildListParams({ cursor: reset ? "" : this.state.cursor, fresh });
     const payload = await fetchJson(`/assets_plus/${this.state.tab}/list?${params.toString()}`);
     let items = payload.items || [];
     if (reset) {
@@ -1722,7 +1725,7 @@ export class AssetsPlusExplorer {
     }
   }
 
-  async refreshList() {
+  async refreshList({ fresh = false } = {}) {
     this.state.loading = true;
     this.state.loadingMore = false;
     this.state.error = null;
@@ -1734,7 +1737,7 @@ export class AssetsPlusExplorer {
     this.clearSelection();
     this.renderGrid({ reset: true });
     try {
-      await this.loadPage({ reset: true });
+      await this.loadPage({ reset: true, fresh });
     } catch (error) {
       this.state.error = t("status.load_error");
       this.renderGrid({ reset: true });
@@ -1878,9 +1881,11 @@ export class AssetsPlusExplorer {
       });
       const updated = new Set(payload.updated || []);
       if (!updated.size) throw new Error("nothing updated");
-      this.state.items.forEach((item) => {
+      const apply = (item) => {
         if (updated.has(item.relpath)) item.starred = starred;
-      });
+      };
+      this.state.items.forEach(apply);
+      this.state.overlay.window?.items.forEach(apply);
       this.refreshStarVisuals(updated);
     } catch (error) {
       warn(t("toast.star_failed"), error);
@@ -1921,18 +1926,21 @@ export class AssetsPlusExplorer {
     const lensRemoved = Boolean(overlayRelpath && removed.has(overlayRelpath));
     let nextOverlayRelpath = null;
     if (lensRemoved) {
-      const filtered = this.getFilteredItems();
-      const index = filtered.findIndex((entry) => entry.relpath === overlayRelpath);
-      if (index !== -1) {
-        for (let i = index + 1; i < filtered.length && !nextOverlayRelpath; i += 1) {
-          if (!removed.has(filtered[i].relpath)) nextOverlayRelpath = filtered[i].relpath;
+      // The lens item may live in the gallery's items or only in the lens window: use whichever has it.
+      const position = this.lensPosition(overlayRelpath);
+      if (position) {
+        const { list, index } = position;
+        for (let i = index + 1; i < list.length && !nextOverlayRelpath; i += 1) {
+          if (!removed.has(list[i].relpath)) nextOverlayRelpath = list[i].relpath;
         }
         for (let i = index - 1; i >= 0 && !nextOverlayRelpath; i -= 1) {
-          if (!removed.has(filtered[i].relpath)) nextOverlayRelpath = filtered[i].relpath;
+          if (!removed.has(list[i].relpath)) nextOverlayRelpath = list[i].relpath;
         }
       }
     }
 
+    const nextWindow = this.state.overlay.window;
+    if (nextWindow) nextWindow.items = nextWindow.items.filter((item) => !removed.has(item.relpath));
     this.state.items = this.state.items.filter((item) => !removed.has(item.relpath));
     relpaths.forEach((relpath) => this.state.selected.delete(relpath));
     this.state.latestMtime = this.state.items.reduce(
@@ -1946,7 +1954,7 @@ export class AssetsPlusExplorer {
       }
     }
     this.renderGrid({ reset: true });
-    if (nextOverlayRelpath && this.state.items.some((item) => item.relpath === nextOverlayRelpath)) {
+    if (nextOverlayRelpath && this.findLensItem(nextOverlayRelpath)) {
       this.state.overlay.relpath = nextOverlayRelpath;
       this.updateOverlayView();
     }
