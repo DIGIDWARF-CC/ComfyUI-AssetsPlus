@@ -36,38 +36,3 @@ def encode_cursor(item: dict[str, Any], starred_first: bool = False) -> str:
         tier = 0 if item.get("starred") else 1
         return f"{_STARRED_PREFIX}{tier}|{base}"
     return base
-
-
-def _order_key(item: dict[str, Any]) -> tuple[int, int, str]:
-    return (0 if item.get("starred") else 1, -item["mtime"], item["relpath"])
-
-
-def apply_cursor_filter(
-    items: list[dict[str, Any]],
-    cursor: Cursor | None,
-) -> list[dict[str, Any]]:
-    if not cursor:
-        return items
-    mtime, relpath, has_relpath, tier = cursor
-    if tier is not None:
-        # Starred-first order: (tier, newest first, relpath). Keep what comes after the cursor.
-        marker = (tier, -mtime, relpath)
-        return [item for item in items if _order_key(item) > marker]
-    if has_relpath:
-        return [
-            item
-            for item in items
-            if item["mtime"] < mtime or (item["mtime"] == mtime and item["relpath"] > relpath)
-        ]
-    return [item for item in items if item["mtime"] < mtime]
-
-
-def apply_since_filter(
-    items: list[dict[str, Any]],
-    since: int | None,
-) -> list[dict[str, Any]]:
-    if since is None:
-        return items
-    # mtime has one-second resolution: a file saved in the same second as the newest known
-    # one must still be reported, so the boundary is inclusive (clients de-duplicate).
-    return [item for item in items if item["mtime"] >= since]
