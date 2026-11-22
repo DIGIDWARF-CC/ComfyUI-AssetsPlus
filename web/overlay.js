@@ -130,7 +130,8 @@ export const overlayAPI = {
     if (position.inGrid) {
       if (direction > 0 && this.state.hasMore) {
         await this.loadNextPage();
-        return this.state.items[position.index + 1] || null;
+        const after = this.lensPosition(current);
+        return after?.list[after.index + 1] || null;
       }
       return null;
     }

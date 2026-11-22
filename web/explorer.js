@@ -83,6 +83,8 @@ export class AssetsPlusExplorer {
     this.overlayKeydownHandler = (event) => this.handleOverlayKeydown(event);
     this.thumbObserver = null;
     this.scrollHandler = null;
+    this.listEpoch = 0;
+    this.nextPagePromise = null;
     this.apiEventHandlers = [];
     this.init();
   }
@@ -821,6 +823,7 @@ export class AssetsPlusExplorer {
       this.elements.body.removeEventListener("scroll", this.scrollHandler);
     }
     this.detachOverlayHandlers();
+    document.removeEventListener("keydown", this.overlayKeydownHandler);
     document.removeEventListener("click", this.documentClickHandler);
     document.removeEventListener("contextmenu", this.documentContextMenuHandler);
     if (this.elements?.contextMenu?.parentNode) {
@@ -1739,8 +1742,11 @@ export class AssetsPlusExplorer {
   }
 
   async loadPage({ reset = false, fresh = false } = {}) {
+    // Every refresh (tab switch, search, reload) starts a new epoch; answers of an older one are dropped.
+    const epoch = this.listEpoch;
     const params = this.buildListParams({ cursor: reset ? "" : this.state.cursor, fresh });
     const payload = await fetchJson(`/assets_plus/${this.state.tab}/list?${params.toString()}`);
+    if (epoch !== this.listEpoch) return;
     let items = payload.items || [];
     if (reset) {
       this.state.items = items;
@@ -1768,6 +1774,7 @@ export class AssetsPlusExplorer {
   }
 
   async refreshList({ fresh = false } = {}) {
+    const epoch = ++this.listEpoch;
     this.state.loading = true;
     this.state.loadingMore = false;
     this.state.error = null;
@@ -1781,34 +1788,48 @@ export class AssetsPlusExplorer {
     try {
       await this.loadPage({ reset: true, fresh });
     } catch (error) {
+      if (epoch !== this.listEpoch) return;
       this.state.error = t("status.load_error");
       this.renderGrid({ reset: true });
     } finally {
-      this.state.loading = false;
-      this.renderGrid({ reset: true });
+      if (epoch === this.listEpoch) {
+        this.state.loading = false;
+        this.renderGrid({ reset: true });
+      }
     }
   }
 
-  async loadNextPage() {
-    if (!this.state.hasMore || this.state.loadingMore || this.state.loading) return;
+  /** Load the next page; callers that arrive while one is already loading wait for that one. */
+  loadNextPage() {
+    if (this.nextPagePromise) return this.nextPagePromise;
+    if (!this.state.hasMore || this.state.loadingMore || this.state.loading) return Promise.resolve();
+    const epoch = this.listEpoch;
     this.state.loadingMore = true;
     this.renderGrid();
-    try {
-      await this.loadPage();
-    } catch (error) {
-      this.state.error = t("status.load_error");
-    } finally {
-      this.state.loadingMore = false;
-      this.renderGrid();
-    }
+    this.nextPagePromise = (async () => {
+      try {
+        await this.loadPage();
+      } catch (error) {
+        if (epoch === this.listEpoch) this.state.error = t("status.load_error");
+      } finally {
+        this.nextPagePromise = null;
+        if (epoch === this.listEpoch) {
+          this.state.loadingMore = false;
+          this.renderGrid();
+        }
+      }
+    })();
+    return this.nextPagePromise;
   }
 
   async refreshNewItems() {
     if (this.state.loading) return;
     const since = this.state.latestMtime || null;
     const params = this.buildListParams({ since });
+    const epoch = this.listEpoch;
     try {
       const payload = await fetchJson(`/assets_plus/${this.state.tab}/list?${params.toString()}`);
+      if (epoch !== this.listEpoch) return;
       // The server reports everything from the newest known second (inclusive, so files saved
       // within the same second are not missed); only rebuild the grid for really new items.
       const known = new Set(this.state.items.map((item) => item.relpath));
@@ -1942,6 +1963,7 @@ export class AssetsPlusExplorer {
 
   refreshStarVisuals(changedRelpaths) {
     const { starredFirst } = this.getSettingsSnapshot();
+    const byPath = new Map(this.state.items.map((entry) => [entry.relpath, entry]));
     if (starredFirst) {
       // Order depends on the star: re-sort, then move only the affected tiles and repaint their stars.
       this.state.items = this.sortItems(this.state.items);
@@ -1949,8 +1971,7 @@ export class AssetsPlusExplorer {
       this.elements.grid.querySelectorAll(".assets-plus-card").forEach((card) => {
         const relpath = card.getAttribute("data-relpath");
         if (!changedRelpaths.has(relpath)) return;
-        const item = this.state.items.find((entry) => entry.relpath === relpath);
-        const starred = Boolean(item?.starred);
+        const starred = Boolean(byPath.get(relpath)?.starred);
         card.classList.toggle("starred", starred);
         this.applyStarState(card.querySelector(".assets-plus-card-star"), starred);
       });
@@ -1958,8 +1979,7 @@ export class AssetsPlusExplorer {
       this.elements.grid.querySelectorAll(".assets-plus-card").forEach((card) => {
         const relpath = card.getAttribute("data-relpath");
         if (!changedRelpaths.has(relpath)) return;
-        const item = this.state.items.find((entry) => entry.relpath === relpath);
-        const starred = Boolean(item?.starred);
+        const starred = Boolean(byPath.get(relpath)?.starred);
         card.classList.toggle("starred", starred);
         this.applyStarState(card.querySelector(".assets-plus-card-star"), starred);
       });
