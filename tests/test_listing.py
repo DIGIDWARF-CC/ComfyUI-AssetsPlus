@@ -237,6 +237,32 @@ def test_concurrent_requests_share_one_scan_even_when_racy() -> None:
     assert not last.racy or again is not last
 
 
+def test_marks_are_reconciled_once_per_snapshot_and_index_state() -> None:
+    out = prepare_handler_gallery()
+    everything = handlers._build_list_response(out, "", {"limit": "0"})
+    starred = [item["relpath"] for item in everything["items"][:30]]
+    handlers.set_starred_assets(out, "output", starred, True)
+
+    calls = []
+    original = handlers.reconcile_marks
+    handlers.reconcile_marks = lambda *args, **kwargs: calls.append(1) or original(*args, **kwargs)
+    try:
+        for _ in range(5):
+            page = handlers._build_list_response(out, "", {"limit": "40"})
+        assert len(calls) <= 4, f"reconcile ran {len(calls)} times for 5 identical requests"
+        before = len(calls)
+        handlers._build_list_response(out, "", {"limit": "40"})
+        assert len(calls) == before, "an unchanged snapshot and index must not be reconciled again"
+        assert sum(1 for item in page["items"] if item["starred"]) == 30
+
+        # a star toggle changes the index file: reconcile again, and the star is visible
+        handlers.set_starred_assets(out, "output", starred[:1], False)
+        again = handlers._build_list_response(out, "", {"limit": "40"})
+        assert len(calls) > before and sum(1 for item in again["items"] if item["starred"]) == 29
+    finally:
+        handlers.reconcile_marks = original
+
+
 def test_fine_timestamps_use_the_short_racy_window() -> None:
     assert listing._racy_window(1_790_000_000_123_456_789) == listing.RACY_WINDOW_FINE
     assert listing._racy_window(1_790_000_000_000_000_000) == listing.RACY_WINDOW
