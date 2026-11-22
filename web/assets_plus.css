@@ -1178,3 +1178,150 @@
   opacity: 0.55;
   cursor: progress;
 }
+
+/* Folded date groups: the chevron turns to the side, the tiles are gone, count and header stay. */
+.assets-plus-group-header {
+  cursor: pointer;
+}
+.assets-plus-group-chevron {
+  transition: transform 0.12s ease;
+}
+.assets-plus-group-header.collapsed .assets-plus-group-chevron {
+  transform: rotate(-90deg);
+}
+
+/* ---- Calendar (the Windows one: days, months, years) ---- */
+.assets-plus-date-menu {
+  min-width: 300px;
+}
+.assets-plus-calendar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 6px 8px 8px;
+}
+.assets-plus-calendar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.assets-plus-calendar-title {
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: 15px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  text-transform: capitalize;
+}
+.assets-plus-calendar-title:hover:not(:disabled) {
+  background: rgba(128, 128, 128, 0.2);
+}
+.assets-plus-calendar-title:disabled {
+  cursor: default;
+}
+.assets-plus-calendar-nav {
+  display: flex;
+  gap: 2px;
+}
+.assets-plus-calendar-step {
+  border: 0;
+  background: none;
+  color: inherit;
+  width: 30px;
+  height: 28px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.assets-plus-calendar-step:hover {
+  background: rgba(128, 128, 128, 0.2);
+}
+.assets-plus-calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+.assets-plus-calendar-months,
+.assets-plus-calendar-years {
+  grid-template-columns: repeat(4, 1fr);
+}
+.assets-plus-calendar-weekday {
+  text-align: center;
+  font-size: 11px;
+  opacity: 0.6;
+  padding: 2px 0 4px;
+  text-transform: capitalize;
+}
+.assets-plus-calendar-cell {
+  position: relative;
+  height: 34px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.assets-plus-calendar-months .assets-plus-calendar-cell,
+.assets-plus-calendar-years .assets-plus-calendar-cell {
+  height: 48px;
+}
+.assets-plus-calendar-cell:hover {
+  background: rgba(128, 128, 128, 0.22);
+}
+.assets-plus-calendar-cell.outside {
+  opacity: 0.45;
+}
+.assets-plus-calendar-cell.empty {
+  opacity: 0.38;
+}
+.assets-plus-calendar-cell.empty.outside {
+  opacity: 0.25;
+}
+.assets-plus-calendar-cell.has-files::after {
+  content: "";
+  position: absolute;
+  bottom: 4px;
+  left: 50%;
+  width: 5px;
+  height: 5px;
+  margin-left: -2.5px;
+  border-radius: 50%;
+  background: var(--assets-plus-accent);
+}
+.assets-plus-calendar-cell.today {
+  border-color: var(--assets-plus-accent);
+}
+.assets-plus-calendar-cell.selected {
+  background: color-mix(in srgb, var(--assets-plus-accent) 38%, transparent);
+  font-weight: 600;
+}
+.assets-plus-calendar-hint {
+  font-size: 11px;
+  opacity: 0.6;
+  line-height: 1.35;
+}
+.assets-plus-calendar-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.assets-plus-calendar-show,
+.assets-plus-calendar-clear {
+  border: 1px solid var(--border-color, rgba(148, 163, 184, 0.35));
+  background: none;
+  color: inherit;
+  padding: 5px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.assets-plus-calendar-show {
+  background: var(--assets-plus-accent);
+  border-color: var(--assets-plus-accent);
+  color: var(--assets-plus-accent-contrast);
+}
+.assets-plus-calendar-show:disabled {
+  opacity: 0.4;
+  cursor: default;
+}

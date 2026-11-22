@@ -85,19 +85,3 @@ export const countsByGroup = (groups, edges, counts) => {
   });
   return result;
 };
-
-// --- calendar ranges ---------------------------------------------------------------------------------------
-
-export const yearRange = (year) => [seconds(new Date(year, 0, 1)), seconds(new Date(year + 1, 0, 1))];
-export const monthRange = (year, month) => [seconds(new Date(year, month, 1)), seconds(new Date(year, month + 1, 1))];
-export const dayRange = (year, month, day) => [seconds(new Date(year, month, day)), seconds(new Date(year, month, day + 1))];
-
-/** [min, max) of a calendar choice { year, month, day } (each may be null), or null when nothing is chosen. */
-export const calendarRange = (calendar) => {
-  if (!calendar || calendar.year === null || calendar.year === undefined) return null;
-  if (calendar.month === null || calendar.month === undefined) return yearRange(calendar.year);
-  if (calendar.day === null || calendar.day === undefined) return monthRange(calendar.year, calendar.month);
-  return dayRange(calendar.year, calendar.month, calendar.day);
-};
-
-export const daysInMonth = (year, month) => new Date(year, month + 1, 0).getDate();

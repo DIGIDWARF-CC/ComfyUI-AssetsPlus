@@ -1928,7 +1928,12 @@ export class AssetsPlusExplorer {
     grid.addEventListener("click", (event) => {
       const header = event.target.closest?.(".assets-plus-group-header");
       if (header && grid.contains(header)) {
-        if (this.state.selectionMode) this.selectGroupFromClick(event, header);
+        // The chevron always folds; the rest of the header folds too, except in selection mode where it selects.
+        if (!this.state.selectionMode || event.target.closest(".assets-plus-group-chevron")) {
+          this.toggleGroupCollapsed(header);
+        } else {
+          this.selectGroupFromClick(event, header);
+        }
         return;
       }
       const item = cardOf(event)?._assetsItem;
@@ -1961,6 +1966,11 @@ export class AssetsPlusExplorer {
           fragment.appendChild(this.buildGroupHeader(group));
           this.groupLastKey = group.key;
         }
+        const card = this.buildCard(item, thumbnailSize);
+        card.dataset.group = group.key;
+        card.hidden = this.state.collapsedGroups.has(group.key);
+        fragment.appendChild(card);
+        return;
       }
       fragment.appendChild(this.buildCard(item, thumbnailSize));
     });
@@ -2175,6 +2185,7 @@ export class AssetsPlusExplorer {
       } else {
         this.setStatus("");
       }
+      this.fillViewport();
     }
   }
 

@@ -134,12 +134,7 @@
   "filters.reset": "Сбросить фильтры",
   "filters.remove": "Убрать фильтр",
   "date.group": "Группировать по дате",
-  "date.calendar": "Календарь",
-  "date.year": "Год",
-  "date.month": "Месяц",
-  "date.day": "День",
-  "date.any": "Любой",
-  "date.clear": "Сбросить календарь",
+  "date.clear": "Сбросить",
   "groups.today": "Сегодня",
   "groups.yesterday": "Вчера",
   "groups.earlier_week": "Раньше на этой неделе",
@@ -150,5 +145,10 @@
   "groups.older": "Очень давно",
   "toast.group_select_failed": "Не удалось выделить всю группу.",
   "confirm.delete.and_more": "...и ещё {count}",
-  "log.filters_failed": "Не удалось загрузить данные фильтров или календаря."
+  "log.filters_failed": "Не удалось загрузить данные фильтров или календаря.",
+  "date.show": "Показать",
+  "date.hint": "Двойной клик или Enter открывает месяц или год. Shift+клик выбирает диапазон.",
+  "date.previous": "Назад",
+  "date.next": "Вперёд",
+  "date.files": "Файлов: {count}"
 }

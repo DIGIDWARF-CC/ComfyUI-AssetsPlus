@@ -134,12 +134,7 @@
   "filters.reset": "Reset filters",
   "filters.remove": "Remove filter",
   "date.group": "Group by date",
-  "date.calendar": "Calendar",
-  "date.year": "Year",
-  "date.month": "Month",
-  "date.day": "Day",
-  "date.any": "Any",
-  "date.clear": "Clear calendar",
+  "date.clear": "Clear",
   "groups.today": "Today",
   "groups.yesterday": "Yesterday",
   "groups.earlier_week": "Earlier this week",
@@ -150,5 +145,10 @@
   "groups.older": "A long time ago",
   "toast.group_select_failed": "Could not select the whole group.",
   "confirm.delete.and_more": "...and {count} more",
-  "log.filters_failed": "Could not load the filter or calendar data."
+  "log.filters_failed": "Could not load the filter or calendar data.",
+  "date.show": "Show",
+  "date.hint": "Double-click or Enter opens a month or year. Shift+click selects a range.",
+  "date.previous": "Previous",
+  "date.next": "Next",
+  "date.files": "{count} files"
 }

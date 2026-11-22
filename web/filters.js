@@ -1,9 +1,8 @@
 import { createElement, fetchJson, warn } from './utils.js';
 import { t } from './i18n.js';
 import { createPopover } from './popover.js';
-import {
-  allGroups, groupOf, edgesFor, countsByGroup, calendarRange, yearRange, monthRange, dayRange, daysInMonth,
-} from './dategroups.js';
+import { createCalendar } from './calendar.js';
+import { allGroups, groupOf, edgesFor, countsByGroup } from './dategroups.js';
 
 /*
  * Filters (type, only starred), the calendar and the date groups of the gallery, in the manner of the Windows Explorer.
@@ -22,7 +21,24 @@ export const loadGroupByDate = () => {
   }
 };
 
-const emptyCalendar = () => ({ year: null, month: null, day: null });
+const COLLAPSED_STORAGE_KEY = "assetsPlus.collapsedGroups";
+
+const loadCollapsed = () => {
+  try {
+    const stored = JSON.parse(window.localStorage?.getItem(COLLAPSED_STORAGE_KEY) || "[]");
+    return new Set(Array.isArray(stored) ? stored.filter((key) => typeof key === "string") : []);
+  } catch {
+    return new Set();
+  }
+};
+
+const saveCollapsed = (keys) => {
+  try {
+    window.localStorage?.setItem(COLLAPSED_STORAGE_KEY, JSON.stringify(Array.from(keys)));
+  } catch {
+    // Lasts until the page is reloaded.
+  }
+};
 
 const checkboxRow = (label, checked, onChange, { disabled = false } = {}) => {
   const row = createElement("label", { className: "assets-plus-popover-row" });
@@ -35,25 +51,22 @@ const checkboxRow = (label, checked, onChange, { disabled = false } = {}) => {
   return row;
 };
 
-const monthName = (month) =>
-  new Intl.DateTimeFormat(undefined, { month: "long" }).format(new Date(2000, month, 1));
-
 export const filtersAPI = {
   /** Fresh filter state; called once from the constructor. */
   initFilterState() {
     Object.assign(this.state, {
       types: new Set(TYPE_ORDER),
       starredOnly: false,
-      calendar: emptyCalendar(),
+      calendar: null, // { min, max, label } of the chosen days, months or years
       groupByDate: loadGroupByDate(),
       selectedGroups: new Set(),
       groupAnchor: null,
+      collapsedGroups: loadCollapsed(),
       offscreen: new Map(), // selected items the gallery has not loaded (a whole date group is selected by range)
     });
     this.groups = [];
     this.groupLastKey = null;
     this.groupCounts = new Map();
-    this.calendarOptions = { years: [], months: [], days: [] };
   },
 
   initFilterUi() {
@@ -62,6 +75,14 @@ export const filtersAPI = {
       button: filterButton,
       render: (list) => this.renderFilterMenu(list),
       className: "assets-plus-filter-menu",
+    });
+    this.calendarPicker = createCalendar({
+      loadCounts: async (edges) => (await this.fetchHistogram(edges)).counts || [],
+      onShow: (calendar) => {
+        this.setCalendar(calendar);
+        this.datePopover.close();
+      },
+      onClear: () => this.setCalendar(null),
     });
     this.datePopover = createPopover({
       button: dateButton,
@@ -80,7 +101,7 @@ export const filtersAPI = {
       this.closeContextMenu();
       this.closeViewMenu();
       this.filterPopover.close();
-      if (!this.datePopover.isOpen()) this.refreshCalendarOptions();
+      if (!this.datePopover.isOpen()) this.calendarPicker.open();
       this.datePopover.toggle();
     });
     this.updateFilterIndicators();
@@ -105,7 +126,13 @@ export const filtersAPI = {
   },
 
   calendarActive() {
-    return calendarRange(this.state.calendar) !== null;
+    return Boolean(this.state.calendar);
+  },
+
+  /** [min, max) in epoch seconds of the chosen calendar range, or null. */
+  calendarBounds() {
+    const calendar = this.state.calendar;
+    return calendar ? [calendar.min, calendar.max] : null;
   },
 
   isFiltered() {
@@ -138,7 +165,7 @@ export const filtersAPI = {
   /** Add the filters to a list request. */
   applyFilterParams(params, { withCalendar = true } = {}) {
     if (this.state.starredOnly) params.set("starred_only", "1");
-    const range = withCalendar ? calendarRange(this.state.calendar) : null;
+    const range = withCalendar ? this.calendarBounds() : null;
     if (range) {
       params.set("mtime_min", String(range[0]));
       params.set("mtime_max", String(range[1]));
@@ -170,9 +197,9 @@ export const filtersAPI = {
   resetFilters() {
     this.state.types = new Set(TYPE_ORDER);
     this.state.starredOnly = false;
-    this.state.calendar = emptyCalendar();
+    this.state.calendar = null;
+    this.calendarPicker?.clear();
     this.filterPopover?.refresh();
-    this.datePopover?.refresh();
     this.applyFilters();
   },
 
@@ -210,9 +237,9 @@ export const filtersAPI = {
   },
 
   setCalendar(calendar) {
-    this.state.calendar = { ...emptyCalendar(), ...calendar };
+    this.state.calendar = calendar;
+    if (!calendar) this.calendarPicker?.clear();
     this.applyFilters();
-    this.refreshCalendarOptions();
   },
 
   updateFilterIndicators() {
@@ -254,97 +281,7 @@ export const filtersAPI = {
       checkboxRow(t("date.group"), this.state.groupByDate, (checked) => this.setGroupByDate(checked))
     );
     list.appendChild(createElement("div", { className: "assets-plus-context-menu-separator" }));
-    list.appendChild(createElement("div", { className: "assets-plus-popover-title", text: t("date.calendar") }));
-    const calendar = this.state.calendar;
-    const options = this.calendarOptions;
-    const makeSelect = (labelKey, entries, current, format, onChange) => {
-      const row = createElement("label", { className: "assets-plus-popover-row assets-plus-popover-select" });
-      row.appendChild(createElement("span", { text: t(labelKey) }));
-      const select = document.createElement("select");
-      const any = document.createElement("option");
-      any.value = "";
-      any.textContent = t("date.any");
-      select.appendChild(any);
-      entries.forEach((entry) => {
-        const option = document.createElement("option");
-        option.value = String(entry.value);
-        option.textContent = `${format(entry.value)} (${entry.count})`;
-        select.appendChild(option);
-      });
-      if (current !== null && !entries.some((entry) => entry.value === current)) {
-        const option = document.createElement("option");
-        option.value = String(current);
-        option.textContent = format(current);
-        select.appendChild(option);
-      }
-      select.value = current === null ? "" : String(current);
-      select.addEventListener("change", () => onChange(select.value === "" ? null : Number(select.value)));
-      row.appendChild(select);
-      return row;
-    };
-    list.appendChild(
-      makeSelect("date.year", options.years, calendar.year, String, (year) => this.setCalendar({ year }))
-    );
-    if (calendar.year !== null) {
-      list.appendChild(
-        makeSelect("date.month", options.months, calendar.month, monthName, (month) =>
-          this.setCalendar({ year: calendar.year, month })
-        )
-      );
-    }
-    if (calendar.month !== null) {
-      list.appendChild(
-        makeSelect("date.day", options.days, calendar.day, String, (day) =>
-          this.setCalendar({ year: calendar.year, month: calendar.month, day })
-        )
-      );
-    }
-    const clear = createElement("button", { className: "assets-plus-context-menu-item", text: t("date.clear") });
-    clear.disabled = !this.calendarActive();
-    clear.addEventListener("click", (event) => {
-      event.stopPropagation();
-      this.setCalendar(emptyCalendar());
-    });
-    list.appendChild(clear);
-  },
-
-  /** Which years / months / days have files (under the other filters, ignoring the calendar itself). */
-  async refreshCalendarOptions() {
-    const ticket = (this.calendarTicket = (this.calendarTicket || 0) + 1);
-    const options = { years: [], months: [], days: [] };
-    try {
-      const bounds = await this.fetchHistogram([]);
-      if (bounds.min === null || bounds.max === null) {
-        this.calendarOptions = options;
-        this.datePopover?.refresh();
-        return;
-      }
-      const first = new Date(bounds.min * 1000).getFullYear();
-      const last = new Date(bounds.max * 1000).getFullYear();
-      const years = [];
-      for (let year = first; year <= last + 1; year += 1) years.push(year);
-      const yearEdges = years.map((year) => yearRange(year)[0]);
-      const byYear = await this.fetchHistogram(yearEdges);
-      byYear.counts.forEach((count, index) => count > 0 && options.years.push({ value: years[index], count }));
-      options.years.reverse();
-      const { year, month } = this.state.calendar;
-      if (year !== null) {
-        const edges = Array.from({ length: 13 }, (_, index) => monthRange(year, index)[0]);
-        const byMonth = await this.fetchHistogram(edges);
-        byMonth.counts.forEach((count, index) => count > 0 && options.months.push({ value: index, count }));
-      }
-      if (year !== null && month !== null) {
-        const total = daysInMonth(year, month);
-        const edges = Array.from({ length: total + 1 }, (_, index) => dayRange(year, month, index + 1)[0]);
-        const byDay = await this.fetchHistogram(edges);
-        byDay.counts.forEach((count, index) => count > 0 && options.days.push({ value: index + 1, count }));
-      }
-    } catch (error) {
-      warn(t("log.filters_failed"), error);
-    }
-    if (ticket !== this.calendarTicket) return;
-    this.calendarOptions = options;
-    this.datePopover?.refresh();
+    list.appendChild(this.calendarPicker.element);
   },
 
   // --- chips: what is filtered right now, each removable ----------------------------------------------------
@@ -381,12 +318,7 @@ export const filtersAPI = {
       });
     }
     if (this.calendarActive()) {
-      const { year, month, day } = this.state.calendar;
-      const parts = [];
-      if (day !== null) parts.push(String(day));
-      if (month !== null) parts.push(monthName(month));
-      parts.push(String(year));
-      add(parts.join(" "), () => this.setCalendar(emptyCalendar()));
+      add(this.state.calendar.label, () => this.setCalendar(null));
     }
     chips.hidden = !chips.childElementCount;
   },
@@ -404,13 +336,43 @@ export const filtersAPI = {
     header.dataset.groupKey = group.key;
     header._group = group;
     header.classList.toggle("selected", this.state.selectedGroups.has(group.key));
+    const collapsed = this.state.collapsedGroups.has(group.key);
+    header.classList.toggle("collapsed", collapsed);
+    header.setAttribute("role", "button");
+    header.setAttribute("aria-expanded", collapsed ? "false" : "true");
     header.append(
-      createElement("i", { className: "pi pi-chevron-down" }),
+      createElement("i", { className: "pi pi-chevron-down assets-plus-group-chevron" }),
       createElement("span", { className: "assets-plus-group-label", text: group.label }),
       createElement("span", { className: "assets-plus-group-count" })
     );
     this.paintGroupCount(header);
     return header;
+  },
+
+  /** Fold a date group away (or open it again): its tiles are hidden, the header and its count stay. */
+  toggleGroupCollapsed(header) {
+    const key = header._group?.key;
+    if (!key) return;
+    const collapsed = !this.state.collapsedGroups.has(key);
+    if (collapsed) this.state.collapsedGroups.add(key);
+    else this.state.collapsedGroups.delete(key);
+    saveCollapsed(this.state.collapsedGroups);
+    header.classList.toggle("collapsed", collapsed);
+    header.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    this.elements.grid.querySelectorAll(`.assets-plus-card[data-group="${key}"]`).forEach((card) => {
+      card.hidden = collapsed;
+    });
+    // With everything folded the list can be too short to scroll: fetch the next page by hand.
+    this.fillViewport();
+  },
+
+  /** Load more pages while the loaded part does not even fill the panel (e.g. after folding groups). */
+  fillViewport() {
+    window.requestAnimationFrame(() => {
+      const body = this.elements.body;
+      if (!body || !this.state.hasMore || this.state.loading || this.state.loadingMore) return;
+      if (body.scrollHeight - body.clientHeight <= 480) this.loadNextPage();
+    });
   },
 
   paintGroupCount(header) {
@@ -446,7 +408,7 @@ export const filtersAPI = {
     ["cursor", "since", "starred_first"].forEach((name) => params.delete(name));
     params.set("limit", "0");
     params.set("lite", "1");
-    const calendar = calendarRange(this.state.calendar);
+    const calendar = this.calendarBounds();
     const low = calendar ? Math.max(min, calendar[0]) : min;
     const high = max === null ? (calendar ? calendar[1] : null) : calendar ? Math.min(max, calendar[1]) : max;
     params.set("mtime_min", String(low));
