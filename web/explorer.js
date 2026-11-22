@@ -19,6 +19,10 @@ import {
 import { t } from './i18n.js';
 import { overlayAPI } from './overlay.js';
 
+// Tiles are built when they come within this distance of the viewport and dropped beyond it.
+const CARD_HYDRATE_MARGIN = "1500px 0px";
+const INITIAL_HYDRATED = 60;
+
 // Corner badge icon per media type (images need none: the thumbnail says it all).
 const CARD_KIND_ICONS = { video: "pi-video", audio: "pi-volume-up" };
 
@@ -82,6 +86,7 @@ export class AssetsPlusExplorer {
     this.documentContextMenuHandler = (event) => this.handleDocumentContextMenu(event);
     this.overlayKeydownHandler = (event) => this.handleOverlayKeydown(event);
     this.thumbObserver = null;
+    this.cardObserver = null;
     this.scrollHandler = null;
     this.listEpoch = 0;
     this.nextPagePromise = null;
@@ -453,6 +458,7 @@ export class AssetsPlusExplorer {
 
     this.scrollHandler = () => this.handleScroll();
     body.addEventListener("scroll", this.scrollHandler);
+    this.bindGridEvents(this.elements.grid);
     this.setupThumbObserver();
 
     this.updateSearchVisibility();
@@ -1446,9 +1452,31 @@ export class AssetsPlusExplorer {
         this.thumbObserver?.observe(el);
       });
     }
+    this.setupCardObserver();
+  }
+
+  /** Builds the content of tiles that come near the viewport and drops it for tiles that are far away. */
+  setupCardObserver() {
+    this.cardObserver?.disconnect();
+    if (typeof IntersectionObserver === "undefined") {
+      this.cardObserver = null;
+      return;
+    }
+    this.cardObserver = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) this.hydrateCard(entry.target);
+          else this.dehydrateCard(entry.target);
+        });
+      },
+      { root: this.elements.body || null, rootMargin: CARD_HYDRATE_MARGIN, threshold: 0 }
+    );
+    this.elements.grid?.querySelectorAll(".assets-plus-card").forEach((card) => this.cardObserver.observe(card));
   }
 
   disconnectThumbObserver() {
+    this.cardObserver?.disconnect();
+    this.cardObserver = null;
     if (!this.thumbObserver) return;
     this.thumbObserver.disconnect();
     this.thumbObserver = null;
@@ -1467,17 +1495,41 @@ export class AssetsPlusExplorer {
     this.thumbObserver.observe(media);
   }
 
+  /**
+   * A tile is a cheap shell (one element) until it comes near the viewport: only then its thumbnail, badges and
+   * buttons are built (hydrateCard), and they are torn down again when it is far away. A gallery of thousands of
+   * tiles then keeps a few hundred DOM nodes, so layout (resizing the sidebar) and scrolling stay cheap, while
+   * the shells keep the grid, the scrollbar and every position-based update exactly as before.
+   */
   buildCard(item, thumbnailSize) {
     const card = createElement("div", { className: "assets-plus-card" });
     card.setAttribute("data-relpath", item.relpath);
-
     card.classList.toggle("selected", this.state.selected.has(item.relpath));
+    card.classList.toggle("starred", Boolean(item.starred));
+    card.draggable = !this.state.selectionMode;
+    card._assetsItem = item;
+    card._assetsThumbSize = thumbnailSize;
+    card._hydrated = false;
+    if (this.cardObserver) {
+      this.cardObserver.observe(card);
+    } else {
+      this.hydrateCard(card);
+    }
+    return card;
+  }
+
+  hydrateCard(card) {
+    const item = card._assetsItem;
+    if (!item || card._hydrated) return;
+    card._hydrated = true;
+    const thumbnailSize = card._assetsThumbSize;
+
     // Shown only in selection mode, on selected cards (see CSS).
     const selectMark = createElement("div", { className: "assets-plus-select-mark" });
     selectMark.innerHTML = '<i class="pi pi-check"></i>';
 
     const thumb = createElement("div", { className: "assets-plus-thumb" });
-    const thumbUrl = buildThumbUrl(item.relpath, this.state.tab, thumbnailSize, `${item.mtime}-${item.size}`);
+    const thumbUrl = buildThumbUrl(item.relpath, this.state.tab, thumbnailSize, itemVersion(item));
     const extension = getFileExtension(item.filename);
     if (item.type === "video" && VIDEO_THUMB_EXTENSIONS.has(extension)) {
       const video = document.createElement("video");
@@ -1500,7 +1552,6 @@ export class AssetsPlusExplorer {
 
     const starButton = createElement("button", { className: "assets-plus-card-star" });
     this.applyStarState(starButton, Boolean(item.starred));
-    card.classList.toggle("starred", Boolean(item.starred));
     starButton.addEventListener("click", (event) => {
       event.stopPropagation();
       this.setStarred([item], !item.starred);
@@ -1516,31 +1567,7 @@ export class AssetsPlusExplorer {
     }
     card.appendChild(starButton);
     card.appendChild(selectMark);
-    card.draggable = !this.state.selectionMode;
-    card.addEventListener("dragstart", (event) => {
-      if (this.state.selectionMode) {
-        event.preventDefault();
-        return;
-      }
-      // Store the asset payload so our own drop handler can pick it up.
-      const payload = JSON.stringify({
-        relpath: item.relpath,
-        tab: this.state.tab,
-        type: item.type,
-        filename: item.filename,
-      });
-      event.dataTransfer.setData("application/x-assetsplus-asset", payload);
-      // Keep text/uri-list for notebook-paste compatibility.
-      const viewUrl = buildViewUrl(item.relpath, this.state.tab, itemVersion(item));
-      const absoluteUrl = new URL(viewUrl, window.location.origin).href;
-      event.dataTransfer.setData("text/uri-list", absoluteUrl);
-      event.dataTransfer.setData("text/plain", absoluteUrl);
-      // Thumbnail preview on cursor
-      const thumbEl = thumb.querySelector("img, video");
-      if (thumbEl instanceof HTMLImageElement || thumbEl instanceof HTMLVideoElement) {
-        event.dataTransfer.setDragImage(thumbEl, thumbEl.offsetWidth / 2, thumbEl.offsetHeight / 2);
-      }
-    });
+
     // Hover panel (like the stock Media Assets tab): download + more actions.
     const menu = createElement("div", { className: "assets-plus-card-menu" });
     const downloadButton = createElement("button", {
@@ -1565,17 +1592,63 @@ export class AssetsPlusExplorer {
       event.stopPropagation();
       this.toggleContextMenu(item, moreButton);
     });
-    card.addEventListener("contextmenu", (event) => {
-      if (this.state.selectionMode) return;
+  }
+
+  /** Tear down the content of a tile that is far from the viewport (never one that is in use). */
+  dehydrateCard(card) {
+    if (!card._hydrated) return;
+    if (card.classList.contains("menu-open") || card.contains(document.activeElement)) return;
+    card.querySelectorAll("[data-src]").forEach((media) => this.thumbObserver?.unobserve(media));
+    card.replaceChildren();
+    card._hydrated = false;
+  }
+
+  /** One set of listeners for every tile (the tiles themselves carry none). */
+  bindGridEvents(grid) {
+    const cardOf = (event) => {
+      const card = event.target.closest?.(".assets-plus-card");
+      return card && grid.contains(card) ? card : null;
+    };
+    grid.addEventListener("dragstart", (event) => {
+      const card = cardOf(event);
+      const item = card?._assetsItem;
+      if (!item) return;
+      if (this.state.selectionMode) {
+        event.preventDefault();
+        return;
+      }
+      // Store the asset payload so our own drop handler can pick it up.
+      const payload = JSON.stringify({
+        relpath: item.relpath,
+        tab: this.state.tab,
+        type: item.type,
+        filename: item.filename,
+      });
+      event.dataTransfer.setData("application/x-assetsplus-asset", payload);
+      // Keep text/uri-list for notebook-paste compatibility.
+      const viewUrl = buildViewUrl(item.relpath, this.state.tab, itemVersion(item));
+      const absoluteUrl = new URL(viewUrl, window.location.origin).href;
+      event.dataTransfer.setData("text/uri-list", absoluteUrl);
+      event.dataTransfer.setData("text/plain", absoluteUrl);
+      // Thumbnail preview on cursor
+      const thumbEl = card.querySelector(".assets-plus-thumb img, .assets-plus-thumb video");
+      if (thumbEl instanceof HTMLImageElement || thumbEl instanceof HTMLVideoElement) {
+        event.dataTransfer.setDragImage(thumbEl, thumbEl.offsetWidth / 2, thumbEl.offsetHeight / 2);
+      }
+    });
+    grid.addEventListener("contextmenu", (event) => {
+      const item = cardOf(event)?._assetsItem;
+      if (!item || this.state.selectionMode) return;
       event.preventDefault();
       this.openContextMenu(item, { x: event.clientX, y: event.clientY });
     });
-
-    card.addEventListener("mousedown", (event) => {
+    grid.addEventListener("mousedown", (event) => {
       // Shift+click extends a range: keep the browser from also selecting text/images between tiles.
-      if (this.state.selectionMode && event.shiftKey) event.preventDefault();
+      if (cardOf(event) && this.state.selectionMode && event.shiftKey) event.preventDefault();
     });
-    card.addEventListener("click", (event) => {
+    grid.addEventListener("click", (event) => {
+      const item = cardOf(event)?._assetsItem;
+      if (!item) return;
       if (this.state.selectionMode) {
         this.selectFromClick(event, item.relpath);
         return;
@@ -1589,18 +1662,24 @@ export class AssetsPlusExplorer {
       this.closeContextMenu();
       this.openOverlay(item.relpath);
     });
-
-    return card;
   }
 
   appendItemsToGrid(items) {
     if (!items.length) return;
     const { thumbnailSize } = this.getSettingsSnapshot();
+    const grid = this.elements.grid;
+    const wasEmpty = grid.children.length === 0;
     const fragment = document.createDocumentFragment();
     items.forEach((item) => {
       fragment.appendChild(this.buildCard(item, thumbnailSize));
     });
-    this.elements.grid.appendChild(fragment);
+    grid.appendChild(fragment);
+    if (wasEmpty) {
+      // The first screenful needs no round trip through the observer.
+      for (let index = 0; index < Math.min(INITIAL_HYDRATED, grid.children.length); index += 1) {
+        this.hydrateCard(grid.children[index]);
+      }
+    }
     this.updateActionsBar();
     this.restoreContextMenu();
   }
@@ -1698,6 +1777,7 @@ export class AssetsPlusExplorer {
       this.elements.grid.querySelectorAll(".assets-plus-card").forEach((card) => {
         if (!replaced.has(card.getAttribute("data-relpath"))) return;
         card.querySelectorAll("[data-src]").forEach((media) => this.thumbObserver?.unobserve(media));
+        this.cardObserver?.unobserve(card);
         card.remove();
         previousCount -= 1;
       });
@@ -1730,6 +1810,7 @@ export class AssetsPlusExplorer {
     this.elements.grid.querySelectorAll(".assets-plus-card").forEach((card) => {
       if (!removed.has(card.getAttribute("data-relpath"))) return;
       card.querySelectorAll("[data-src]").forEach((media) => this.thumbObserver?.unobserve(media));
+      this.cardObserver?.unobserve(card);
       card.remove();
     });
     this.renderGrid();
