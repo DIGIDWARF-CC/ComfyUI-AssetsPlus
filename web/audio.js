@@ -74,22 +74,47 @@ const pumpWaveQueue = () => {
   }
 };
 
-/** Waveform bars and duration of a file, or null when it is too big or cannot be decoded. Cached. */
-export const getWaveform = (url, count, { lens = false } = {}) => {
+const WAVE_ABANDONED = Symbol("abandoned");
+
+/**
+ * Waveform bars and duration of a file, or null when it is too big or cannot be decoded. Cached.
+ * `signal` (AbortSignal): when every caller waiting for a file has aborted before its download started, the
+ * download is dropped (tiles scrolled past never cost a fetch) and the promise resolves with null, uncached.
+ */
+export const getWaveform = (url, count, { lens = false, signal = null } = {}) => {
   const key = `${url}|${count}`;
   if (waveCache.has(key)) return Promise.resolve(waveCache.get(key));
-  if (waveInflight.has(key)) return waveInflight.get(key);
-  const promise = new Promise((resolve) => {
-    waveQueue.push({ url, count, maxBytes: lens ? LENS_MAX_BYTES : TILE_MAX_BYTES, resolve });
-    pumpWaveQueue();
-  }).then((result) => {
-    waveInflight.delete(key);
-    waveCache.set(key, result);
-    if (waveCache.size > CACHE_LIMIT) waveCache.delete(waveCache.keys().next().value);
-    return result;
-  });
-  waveInflight.set(key, promise);
-  return promise;
+  let entry = waveInflight.get(key);
+  if (!entry) {
+    const job = { url, count, maxBytes: lens ? LENS_MAX_BYTES : TILE_MAX_BYTES, started: false, resolve: null };
+    const promise = new Promise((resolve) => {
+      job.resolve = resolve;
+      waveQueue.push(job);
+      pumpWaveQueue();
+    }).then((result) => {
+      waveInflight.delete(key);
+      if (result === WAVE_ABANDONED) return null;
+      waveCache.set(key, result);
+      if (waveCache.size > CACHE_LIMIT) waveCache.delete(waveCache.keys().next().value);
+      return result;
+    });
+    entry = { promise, job, refs: 0 };
+    waveInflight.set(key, entry);
+  }
+  entry.refs += 1;
+  if (signal) {
+    const release = () => {
+      entry.refs -= 1;
+      const index = waveQueue.indexOf(entry.job);
+      if (entry.refs <= 0 && index !== -1) {
+        waveQueue.splice(index, 1);
+        entry.job.resolve(WAVE_ABANDONED);
+      }
+    };
+    if (signal.aborted) release();
+    else signal.addEventListener("abort", release, { once: true });
+  }
+  return entry.promise;
 };
 
 export const formatTime = (seconds) => {
@@ -355,6 +380,7 @@ export const createAudioControl = (variant, { key, url, label, bars: barCount = 
     if (root.isConnected) wasConnected = true;
     else if (wasConnected) {
       destroyed = true;
+      waveAbort.abort();
       unsubscribe();
       observer?.disconnect();
       return;
@@ -364,7 +390,8 @@ export const createAudioControl = (variant, { key, url, label, bars: barCount = 
     redraw();
   });
 
-  getWaveform(url, barCount, { lens: variant === "lens" }).then((result) => {
+  const waveAbort = new AbortController();
+  getWaveform(url, barCount, { lens: variant === "lens", signal: waveAbort.signal }).then((result) => {
     if (destroyed) return;
     if (result) {
       bars = result.bars;
@@ -385,6 +412,7 @@ export const createAudioControl = (variant, { key, url, label, bars: barCount = 
     element: root,
     destroy() {
       destroyed = true;
+      waveAbort.abort(); // a tile that left the page must not keep a download queued
       unsubscribe();
       observer?.disconnect();
     },

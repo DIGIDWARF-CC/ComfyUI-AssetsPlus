@@ -26,6 +26,7 @@ import { overlayAPI } from './overlay.js';
 
 // Tiles are built when they come within this distance of the viewport and dropped beyond it.
 const CARD_HYDRATE_MARGIN = "1500px 0px";
+const THUMB_SETTLE_MS = 150;
 const INITIAL_HYDRATED = 60;
 
 // Corner badge icon per media type (images need none: the thumbnail says it all).
@@ -1614,20 +1615,19 @@ export class AssetsPlusExplorer {
       return;
     }
     const root = this.elements.body || null;
+    this.thumbPending = new Map();
     this.thumbObserver = new IntersectionObserver(
       (entries) => {
+        // A tile that merely flies through the band while the user drags the scrollbar is not worth a request:
+        // it must stay in the band for THUMB_SETTLE_MS (see flushThumbs) before its picture is fetched.
         entries.forEach((entry) => {
-          if (!entry.isIntersecting) return;
-          const media = entry.target;
-          const src = media.dataset.src;
-          if (src) {
-            media.src = src;
-            if (media.tagName === "VIDEO") {
-              media.load?.();
-            }
+          if (entry.isIntersecting) {
+            if (!this.thumbPending.has(entry.target)) this.thumbPending.set(entry.target, performance.now());
+          } else {
+            this.thumbPending.delete(entry.target);
           }
-          this.thumbObserver?.unobserve(media);
         });
+        this.scheduleThumbFlush();
       },
       {
         root,
@@ -1641,6 +1641,32 @@ export class AssetsPlusExplorer {
       });
     }
     this.setupCardObserver();
+  }
+
+  scheduleThumbFlush() {
+    if (this.thumbFlushTimer || !this.thumbPending?.size) return;
+    this.thumbFlushTimer = setTimeout(() => {
+      this.thumbFlushTimer = 0;
+      this.flushThumbs();
+    }, THUMB_SETTLE_MS / 2);
+  }
+
+  /** Starts loading the pictures of tiles that have stayed near the viewport for THUMB_SETTLE_MS. */
+  flushThumbs() {
+    const pending = this.thumbPending;
+    if (!pending) return;
+    const now = performance.now();
+    for (const [media, since] of pending) {
+      if (now - since < THUMB_SETTLE_MS) continue;
+      pending.delete(media);
+      const src = media.dataset.src;
+      if (src) {
+        media.src = src;
+        if (media.tagName === "VIDEO") media.load?.();
+      }
+      this.thumbObserver?.unobserve(media);
+    }
+    this.scheduleThumbFlush();
   }
 
   /** Builds the content of tiles that come near the viewport and drops it for tiles that are far away. */
@@ -1663,6 +1689,9 @@ export class AssetsPlusExplorer {
   }
 
   disconnectThumbObserver() {
+    clearTimeout(this.thumbFlushTimer);
+    this.thumbFlushTimer = 0;
+    this.thumbPending?.clear();
     this.cardObserver?.disconnect();
     this.cardObserver = null;
     if (!this.thumbObserver) return;
@@ -1876,7 +1905,12 @@ export class AssetsPlusExplorer {
   dehydrateCard(card) {
     if (!card._hydrated) return;
     if (card.classList.contains("menu-open") || card.contains(document.activeElement)) return;
-    card.querySelectorAll("[data-src]").forEach((media) => this.thumbObserver?.unobserve(media));
+    card.querySelectorAll("img, video").forEach((media) => {
+      this.thumbObserver?.unobserve(media);
+      this.thumbPending?.delete(media);
+      // A picture still on its way is cancelled with its tile (a detached image may otherwise keep loading).
+      if (media.tagName === "IMG" && !media.complete) media.removeAttribute("src");
+    });
     card._audioControl?.destroy();
     card._audioControl = null;
     card.replaceChildren();
