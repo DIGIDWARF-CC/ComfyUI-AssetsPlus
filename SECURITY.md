@@ -27,7 +27,7 @@ extension can touch, so that reviewers and automated scanners can see what is in
 | Delete, mode *hide* | Records the file in `hidden.json`; the file is not touched. |
 | Move to Imported | `output/<file>` to the input root with `os.link` plus `unlink`, or copy, size check, `os.replace`, `unlink` across volumes. Never overwrites; name clashes get a numeric suffix. |
 | Star | Records the file in `starred.json`; the file is not touched. |
-| Thumbnails | Pillow reads the image and writes a PNG preview into `user/__assets_plus/thumb_cache/`. |
+| Thumbnails | Pillow reads the image and writes a WebP preview into `user/__assets_plus/thumb_cache/`. |
 
 `ctypes` is used only in `assets_plus/trash.py`, only on Windows, only to call `SHFileOperationW` (the
 Recycle Bin API) on a single absolute path inside the output or input directory.

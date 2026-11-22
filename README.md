@@ -44,6 +44,7 @@ Available options:
 - `recursive`: recursive scan of the output directory (`true/false`).
 - `default_delete_mode`: `"trash" | "delete" | "hide"`.
 - `scan_depth`: depth limit for recursive scanning (`null` = no limit).
+- `thumbnail_cache_mb`: size budget of the thumbnail cache in MB (default `500`, minimum `32`); the least recently used thumbnails are removed when it is exceeded.
 
 UI settings (ComfyUI Settings → Assets+ Explorer):
 - **Assets+ page size** — number of items fetched per page.
@@ -142,7 +143,7 @@ The extension structure matches Manager requirements:
 
 * Trash support lives in `assets_plus/trash.py` (`send2trash` first, native implementation otherwise).
 * Hidden assets are stored in `user/__assets_plus/hidden.json` (input entries are namespaced).
-* Thumbnail cache: `user/__assets_plus/thumb_cache/`.
+* Thumbnail cache: `user/__assets_plus/thumb_cache/v2/`. Thumbnails are small lossy WebP files (about a tenth of the size of the PNGs older versions wrote) spread over 256 folders and evicted least-recently-used first. Files of the older flat PNG layout are deleted once, in the background.
 * The thumbnail cache can be cleared from settings or via `POST /assets_plus/thumb/clear`.
 
 ## Third-party assets
