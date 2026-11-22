@@ -27,6 +27,7 @@ class AssetsPlusConfig:
     recursive: bool = True
     default_delete_mode: str = "trash"
     scan_depth: int | None = None
+    thumbnail_cache_mb: int = 500
 
 
 DEFAULT_CONFIG = AssetsPlusConfig()
@@ -147,6 +148,12 @@ def load_config() -> AssetsPlusConfig:
 
     scan_depth = _coerce_scan_depth(raw.get("scan_depth", DEFAULT_CONFIG.scan_depth))
 
+    try:
+        thumbnail_cache_mb = int(raw.get("thumbnail_cache_mb", DEFAULT_CONFIG.thumbnail_cache_mb))
+    except (TypeError, ValueError):
+        thumbnail_cache_mb = DEFAULT_CONFIG.thumbnail_cache_mb
+    thumbnail_cache_mb = min(max(thumbnail_cache_mb, 32), 100_000)
+
     config = AssetsPlusConfig(
         allowed_extensions=allowed_extensions,
         thumbnail_quality=thumbnail_quality,
@@ -154,6 +161,7 @@ def load_config() -> AssetsPlusConfig:
         recursive=recursive,
         default_delete_mode=default_delete_mode,
         scan_depth=scan_depth,
+        thumbnail_cache_mb=thumbnail_cache_mb,
     )
     _config_cache = config
     _config_cache_ts = now

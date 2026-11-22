@@ -263,39 +263,159 @@ def test_marks_are_reconciled_once_per_snapshot_and_index_state() -> None:
         handlers.reconcile_marks = original
 
 
+def make_noise_image(path: Path, size: int = 400, mode: str = "RGB") -> None:
+    from PIL import Image
+
+    channels = {"RGB": 3, "RGBA": 4, "L": 1}[mode]
+    Image.frombytes(mode, (size, size), os.urandom(size * size * channels)).save(path)
+
+
 def test_thumbnails_are_shared_between_simultaneous_requests_and_handle_odd_modes() -> None:
     import asyncio
 
     from PIL import Image
 
+    from assets_plus import thumbcache
+
     folder = WORK / "thumbs"
     folder.mkdir(exist_ok=True)
     source = folder / "cmyk.tif"
     Image.new("CMYK", (600, 400), (10, 20, 30, 40)).save(source)
-    cache_path = folder / "cmyk_thumb.png"
-    cache_path.unlink(missing_ok=True)
+    key = thumbcache.cache_key("output", "cmyk.tif", 1, 2, 128, 128)
 
     calls = []
-    original = handlers._make_thumbnail
+    original = thumbcache.write_thumbnail
 
     def counting(*args):
         calls.append(1)
         time.sleep(0.1)
         return original(*args)
 
-    handlers._make_thumbnail = counting
+    thumbcache.write_thumbnail = counting
 
-    async def burst() -> None:
-        await asyncio.gather(*(handlers._generate_thumbnail(source, 128, 128, cache_path) for _ in range(8)))
+    async def burst() -> list:
+        return await asyncio.gather(*(handlers._generate_thumbnail(source, 128, 128, key) for _ in range(8)))
 
     try:
-        asyncio.run(burst())
+        results = asyncio.run(burst())
     finally:
-        handlers._make_thumbnail = original
+        thumbcache.write_thumbnail = original
     assert len(calls) == 1, f"{len(calls)} conversions for 8 simultaneous requests of one tile"
     assert not handlers._THUMB_INFLIGHT, "finished work must be forgotten"
-    with Image.open(cache_path) as thumb:
-        assert thumb.size[0] <= 128 and thumb.size[1] <= 128 and thumb.mode == "RGB"
+    assert all(path == results[0] for path in results) and thumbcache.lookup(key) == results[0]
+    with Image.open(results[0]) as thumb:
+        assert thumb.format == "WEBP" and thumb.size[0] <= 128 and thumb.size[1] <= 128 and thumb.mode == "RGB"
+
+
+def test_thumbnail_cache_layout_format_and_keys() -> None:
+    from PIL import Image
+
+    from assets_plus import thumbcache
+
+    folder = WORK / "thumbs_layout"
+    folder.mkdir(exist_ok=True)
+    plain = folder / "photo.png"
+    make_noise_image(plain, 500)
+    alpha = folder / "alpha.png"
+    make_noise_image(alpha, 300, "RGBA")
+    tall = folder / "tall.jpg"
+    exif = Image.Exif()
+    exif[0x0112] = 6  # stored rotated: shown turned by 90 degrees
+    Image.frombytes("RGB", (200, 100), os.urandom(200 * 100 * 3)).save(tall, exif=exif)
+
+    key = thumbcache.cache_key("output", "photo.png", 5, 6, 256, 256)
+    path = thumbcache.write_thumbnail(plain, 256, 256, key)
+    assert path == thumbcache.entry_path(key) and path.parent.name == key[:2] and path.suffix == ".webp"
+    assert path.stat().st_size < plain.stat().st_size / 3, "the thumbnail must be much smaller than the noisy source"
+    with Image.open(path) as thumb:
+        assert thumb.size == (256, 256)
+
+    with Image.open(thumbcache.write_thumbnail(alpha, 128, 128, thumbcache.cache_key("output", "alpha.png", 1, 1, 128, 128))) as thumb:
+        assert "A" in thumb.getbands(), "transparency must survive"
+    with Image.open(thumbcache.write_thumbnail(tall, 128, 128, thumbcache.cache_key("input", "tall.jpg", 1, 1, 128, 128))) as thumb:
+        assert thumb.size[1] > thumb.size[0], "EXIF orientation must be applied"
+
+    keys = {
+        thumbcache.cache_key(scope, "a.png", mtime, size, 256, 256)
+        for scope in ("output", "input")
+        for mtime in (1, 2)
+        for size in (10, 11)
+    }
+    assert len(keys) == 8, "gallery, mtime and size must all change the key"
+    assert thumbcache.cache_key("output", "a.png", 1, 1, 256, 256) != thumbcache.cache_key("output", "a.png", 1, 1, 512, 512)
+
+
+def test_thumbnail_cache_evicts_least_recently_used_down_to_the_low_water_mark() -> None:
+    from assets_plus import thumbcache
+
+    thumbcache.clear()
+    folder = WORK / "thumbs_lru"
+    folder.mkdir(exist_ok=True)
+    source = folder / "noise.png"
+    make_noise_image(source, 300)
+    keys = [thumbcache.cache_key("output", f"n{i}.png", i, i, 128, 128) for i in range(40)]
+    for key in keys:
+        thumbcache.write_thumbnail(source, 128, 128, key)
+    entry_size = thumbcache.entry_path(keys[0]).stat().st_size
+    now = time.time()
+    for position, key in enumerate(keys):  # entry 0 is the oldest, entry 39 the newest
+        os.utime(thumbcache.entry_path(key), (now - 1000 + position, now - 1000 + position))
+    # an old entry is used again: lookup must give it a fresh last-use time
+    os.utime(thumbcache.entry_path(keys[0]), (now - 100000, now - 100000))
+    assert thumbcache.lookup(keys[0]) is not None
+    assert time.time() - thumbcache.entry_path(keys[0]).stat().st_mtime < 60
+
+    budget = entry_size * 30
+    original_budget, original_wait = thumbcache.budget_bytes, thumbcache.MIN_PASS_INTERVAL
+    thumbcache.budget_bytes = lambda: budget
+    try:
+        thumbcache._maintenance_pass()
+    finally:
+        thumbcache.budget_bytes = original_budget
+    left = [key for key in keys if thumbcache.entry_path(key).exists()]
+    total = sum(thumbcache.entry_path(key).stat().st_size for key in left)
+    assert total <= budget * thumbcache.LOW_WATER + entry_size, "eviction must reach the low-water mark"
+    assert len(left) < 40 and keys[0] in left, "the entry used last must survive"
+    assert keys[1] not in left and keys[39] in left, "the least recently used entries go first"
+    assert thumbcache._total_bytes == total, "the running size must match the disk after a pass"
+
+
+def test_thumbnail_cache_cleanup_of_old_layout_removal_clear_and_failures() -> None:
+    from assets_plus import thumbcache
+    from assets_plus.storage import thumb_cache_dir
+
+    thumbcache.clear()
+    root = thumb_cache_dir()
+    legacy = root / ("a" * 64 + ".png")
+    legacy.write_bytes(b"old png thumbnail")
+    placeholder = root / "_placeholder_other_256x256.png"
+    placeholder.write_bytes(b"placeholder")
+    stray = root / "notes.txt"
+    stray.write_bytes(b"not ours to delete")
+    thumbcache._legacy_purged = False
+    thumbcache._maintenance_pass()
+    assert not legacy.exists() and placeholder.exists() and stray.exists()
+
+    folder = WORK / "thumbs_cleanup"
+    folder.mkdir(exist_ok=True)
+    source = folder / "noise.png"
+    make_noise_image(source, 200)
+    sizes = ((256, 256), (512, 512))
+    for width, height in sizes:
+        thumbcache.write_thumbnail(source, width, height, thumbcache.cache_key("input", "gone.png", 7, 8, width, height))
+    assert thumbcache.remove_entries("input", "gone.png", 7, 8, sizes) == 2
+    assert thumbcache.remove_entries("input", "gone.png", 7, 8, sizes) == 0
+    other = thumbcache.cache_key("input", "kept.png", 1, 1, 256, 256)
+    thumbcache.write_thumbnail(source, 256, 256, other)
+    legacy.write_bytes(b"old again")
+    assert thumbcache.clear() == 2, "clear removes the new entries and old-layout files, not placeholders"
+    assert thumbcache.lookup(other) is None and not legacy.exists() and placeholder.exists()
+
+    assert not thumbcache.recently_failed("broken")
+    thumbcache.remember_failure("broken")
+    assert thumbcache.recently_failed("broken")
+    thumbcache._failures["broken"] -= thumbcache.FAILURE_MEMORY + 1
+    assert not thumbcache.recently_failed("broken"), "a failure is forgotten after a while"
 
 
 def test_file_replaced_under_the_same_name_gets_a_new_fingerprint_and_thumbnail_key() -> None:
@@ -315,9 +435,9 @@ def test_file_replaced_under_the_same_name_gets_a_new_fingerprint_and_thumbnail_
     assert (new["mtime"], new["size"]) != (old["mtime"], old["size"])
     assert sum(1 for item in second["items"] if item["relpath"] == name) == 1
 
-    from assets_plus.metadata import build_thumb_cache_key
+    from assets_plus import thumbcache
 
-    keys = {build_thumb_cache_key(name, item["mtime"], item["size"], 256, 256) for item in (old, new)}
+    keys = {thumbcache.cache_key("output", name, item["mtime"], item["size"], 256, 256) for item in (old, new)}
     assert len(keys) == 2, "the thumbnail cache must not serve the old file's thumbnail for the new one"
 
     # a star belongs to the old file: a file generated again under the name does not inherit it

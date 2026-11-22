@@ -12,12 +12,11 @@ from pathlib import Path
 from typing import Any
 
 from aiohttp import web
-from PIL import Image
 from server import PromptServer
 
 from .config import load_config, thumbnail_size_from_quality
 from .storage import (
-    HiddenEntry, load_hidden, load_starred, thumb_cache_dir, update_hidden, evict_thumb_cache,
+    HiddenEntry, load_hidden, load_starred, update_hidden,
     hidden_index_path, starred_index_path, starred_key, update_starred,
 )
 from .paths import get_output_directory, get_input_directory, get_i18n_directory, resolve_relpath, load_translation_file, LANGUAGE_CODE_RE
@@ -26,7 +25,8 @@ from .listing import (
     Filters, R_MTIME, R_REL, R_SIZE, Snapshot, build_items, get_snapshot, invalidate, iter_visible,
 )
 from .marks import MarkScope, reconcile_marks
-from .metadata import read_metadata, build_thumb_cache_key, remove_thumb_cache_entries, clear_thumb_cache
+from . import thumbcache
+from .metadata import read_metadata
 from .trash import move_to_trash
 from .pagination import parse_cursor, encode_cursor
 
@@ -64,42 +64,24 @@ def _set_content_type(response: web.StreamResponse, path: Path) -> None:
 # Thumbnails get their own small pool: a burst of tiles scrolling into view must not occupy the threads that
 # list, window and delete requests run on, and each decode can need a lot of memory for a large image.
 _THUMB_POOL = ThreadPoolExecutor(max_workers=3, thread_name_prefix="assets-plus-thumb")
-_THUMB_INFLIGHT: dict[Path, asyncio.Future] = {}
-_PNG_MODES = {"1", "L", "LA", "P", "RGB", "RGBA"}
+_THUMB_INFLIGHT: dict[str, asyncio.Future] = {}
 
 
-def _make_thumbnail(path: Path, width: int, height: int, cache_path: Path) -> None:
-    # Write to a temp file and publish it atomically: a failed or concurrent save must
-    # never leave a truncated PNG at cache_path (it would be served forever).
-    tmp_path = cache_path.with_name(f".{cache_path.name}.{threading.get_ident()}.tmp")
-    try:
-        with Image.open(path) as image:
-            image.draft("RGB", (width * 2, height * 2))  # JPEG: decode at a reduced scale, much cheaper
-            image.thumbnail((width, height))
-            if image.mode not in _PNG_MODES:  # CMYK, 16-bit and float modes cannot be saved as PNG as they are
-                image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
-            image.save(tmp_path, format="PNG")
-        os.replace(tmp_path, cache_path)
-    finally:
-        tmp_path.unlink(missing_ok=True)
-    evict_thumb_cache()
-
-
-async def _generate_thumbnail(path: Path, width: int, height: int, cache_path: Path) -> None:
-    """Generate a thumbnail in the thumbnail pool; simultaneous requests for one tile share the work."""
-    future = _THUMB_INFLIGHT.get(cache_path)
+async def _generate_thumbnail(path: Path, width: int, height: int, key: str) -> Path:
+    """Render a thumbnail into the cache in the thumbnail pool; simultaneous requests for one tile share the work."""
+    future = _THUMB_INFLIGHT.get(key)
     if future is None:
-        future = asyncio.get_running_loop().run_in_executor(_THUMB_POOL, _make_thumbnail, path, width, height, cache_path)
-        _THUMB_INFLIGHT[cache_path] = future
+        future = asyncio.get_running_loop().run_in_executor(_THUMB_POOL, thumbcache.write_thumbnail, path, width, height, key)
+        _THUMB_INFLIGHT[key] = future
 
         def done(finished: asyncio.Future) -> None:
-            _THUMB_INFLIGHT.pop(cache_path, None)
+            _THUMB_INFLIGHT.pop(key, None)
             if not finished.cancelled():
                 finished.exception()  # mark retrieved even if every waiter went away
 
         future.add_done_callback(done)
     # shield: one client giving up (or the timeout) must not cancel the work the others wait for
-    await asyncio.wait_for(asyncio.shield(future), timeout=30.0)
+    return await asyncio.wait_for(asyncio.shield(future), timeout=30.0)
 
 
 def _int_param(params: Any, name: str, default: int, minimum: int = 1, maximum: int | None = None) -> int:
@@ -113,7 +95,7 @@ def _int_param(params: Any, name: str, default: int, minimum: int = 1, maximum: 
     return value
 
 
-async def _thumb_response(request: web.Request, base_dir: Path) -> web.StreamResponse:
+async def _thumb_response(request: web.Request, base_dir: Path, scope: str) -> web.StreamResponse:
     """Shared body of the output/input thumbnail endpoints."""
     config = load_config()
     params = request.rel_url.query
@@ -152,17 +134,20 @@ async def _thumb_response(request: web.Request, base_dir: Path) -> web.StreamRes
         return placeholder_response(kind)
 
     stat = path.stat()
-    cache_key = build_thumb_cache_key(relpath, int(stat.st_mtime), stat.st_size, width, height)
-    cache_path = thumb_cache_dir() / f"{cache_key}.png"
-    if cache_path.exists():
-        return respond(cache_path)
+    key = thumbcache.cache_key(scope, relpath, int(stat.st_mtime), stat.st_size, width, height)
+    cached = thumbcache.lookup(key)
+    if cached is not None:
+        return respond(cached)
+    if thumbcache.recently_failed(key):  # do not decode a broken file again on every scroll
+        return placeholder_response("other", cacheable=False)
 
     try:
-        await _generate_thumbnail(path, width, height, cache_path)
+        cached = await _generate_thumbnail(path, width, height, key)
     except Exception:  # unreadable/huge/odd-mode image or timeout: show a placeholder tile
+        thumbcache.remember_failure(key)
         LOGGER.warning("[Assets+ Explorer] Thumbnail failed for %s", relpath, exc_info=True)
-        return placeholder_response("other", cacheable=False)  # a later attempt may succeed
-    return respond(cache_path)
+        return placeholder_response("other", cacheable=False)
+    return respond(cached)
 
 
 def delete_assets(
@@ -190,7 +175,9 @@ def delete_assets(
             failed.append(relpath)
             continue
         stat = path.stat()
-        remove_thumb_cache_entries(relpath, int(stat.st_mtime), stat.st_size, thumbnail_sizes)
+        thumbcache.remove_entries(
+            "input" if hidden_prefix == "input/" else "output", relpath, int(stat.st_mtime), stat.st_size, thumbnail_sizes
+        )
         if mode == "hide":
             hidden_key = f"{hidden_prefix}{relpath}" if hidden_prefix else relpath
             hidden_updates[hidden_key] = HiddenEntry(
@@ -437,17 +424,17 @@ async def assets_plus_config(_: web.Request) -> web.Response:
 
 @PromptServer.instance.routes.get("/assets_plus/output/thumb")
 async def output_thumb(request: web.Request) -> web.StreamResponse:
-    return await _thumb_response(request, get_output_directory())
+    return await _thumb_response(request, get_output_directory(), "output")
 
 
 @PromptServer.instance.routes.get("/assets_plus/input/thumb")
 async def input_thumb(request: web.Request) -> web.StreamResponse:
-    return await _thumb_response(request, get_input_directory())
+    return await _thumb_response(request, get_input_directory(), "input")
 
 
 @PromptServer.instance.routes.post("/assets_plus/thumb/clear")
 async def clear_thumbnails(_: web.Request) -> web.Response:
-    removed = clear_thumb_cache()
+    removed = await asyncio.to_thread(thumbcache.clear)
     LOGGER.info("[Assets+ Explorer] Cleared thumbnail cache entries=%s", removed)
     return web.json_response({"removed": removed})
 
@@ -659,7 +646,7 @@ def move_assets_to_input(
         if not placed:
             failed.append(relpath)
             continue
-        remove_thumb_cache_entries(relpath, int(stat.st_mtime), stat.st_size, thumbnail_sizes)
+        thumbcache.remove_entries("output", relpath, int(stat.st_mtime), stat.st_size, thumbnail_sizes)
         moved.append({"from": relpath, "to": destination.name})
         transfers.append((relpath, destination.name, int(stat.st_mtime), stat.st_size))
 
