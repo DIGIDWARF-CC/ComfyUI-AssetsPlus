@@ -113,5 +113,16 @@
   "settings.formats.audio": "Аудио",
   "settings.formats.mesh": "3D-модели",
   "toast.formats_failed": "Не удалось сохранить форматы (хотя бы один должен остаться включённым).",
-  "log.formats_failed": "Не удалось сохранить или загрузить форматы файлов."
+  "log.formats_failed": "Не удалось сохранить или загрузить форматы файлов.",
+  "actions.view": "Вид",
+  "view.list": "Список",
+  "view.small": "Сетка (мелкая)",
+  "view.large": "Сетка (крупная)",
+  "audio.label": "Аудио",
+  "audio.play": "Играть",
+  "audio.pause": "Пауза",
+  "audio.previous": "Назад",
+  "audio.next": "Вперёд",
+  "audio.mute": "Без звука",
+  "audio.volume": "Громкость"
 }

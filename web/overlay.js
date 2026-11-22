@@ -1,6 +1,7 @@
 import { buildViewUrl, itemVersion, clamp, fetchJson, getFileExtension, warn, log } from './utils.js';
 import { OUTPUT_TAB, INPUT_TAB, OVERLAY_COMMANDS } from './constants.js';
 import { t } from './i18n.js';
+import { createAudioControl, playback } from './audio.js';
 
 export const overlayAPI = {
   getOverlayItem() {
@@ -64,12 +65,8 @@ export const overlayAPI = {
     overlayVideo.pause?.();
     overlayVideo.removeAttribute("src");
     overlayVideo.load?.();
-    const audioEl = overlayMedia?.querySelector(".assets-plus-overlay-audio");
-    if (audioEl) {
-      audioEl.pause?.();
-      audioEl.removeAttribute("src");
-      audioEl.load?.();
-    }
+    // Closing the lens leaves a sound that is playing alone: the tile or row shows it.
+    this.removeLensAudio();
     const meshEl = overlayMedia?.querySelector(".assets-plus-overlay-mesh");
     if (meshEl) {
       meshEl.removeAttribute("src");
@@ -77,7 +74,25 @@ export const overlayAPI = {
     }
   },
 
+  /** Take the audio player out of the lens. Returns true when there was one. */
+  removeLensAudio() {
+    const element = this.elements.overlayMedia?.querySelector(".assets-plus-overlay-audio");
+    if (!element) return false;
+    element._control?.destroy();
+    element.remove();
+    return true;
+  },
+
   handleOverlayKeydown(event) {
+    if (event.key === " " && this.state.overlay.relpath && !event.defaultPrevented && !this.isDialogEventTarget(event.target)) {
+      const control = this.elements.overlayMedia?.querySelector(".assets-plus-overlay-audio");
+      if (control && !event.target?.closest?.("input, textarea, button, select")) {
+        event.preventDefault();
+        event.stopPropagation();
+        control.querySelector(".assets-plus-audio-play")?.click();
+        return;
+      }
+    }
     if (event.key !== "Escape" || !this.state.overlay.relpath) return;
     if (event.defaultPrevented || this.isDialogEventTarget(event.target)) return;
     event.preventDefault();
@@ -230,8 +245,9 @@ export const overlayAPI = {
     overlayVideo.pause?.();
     overlayVideo.removeAttribute("src");
     overlayVideo.load?.();
-    const _audioEl = overlayMedia.querySelector(".assets-plus-overlay-audio");
-    if (_audioEl) { _audioEl.pause?.(); _audioEl.removeAttribute("src"); _audioEl.style.display = "none"; }
+    // Moving on from a sound the lens showed stops it; a sound started elsewhere is left alone.
+    if (this.removeLensAudio() && this.lensAudioRelpath !== item.relpath) playback.stop();
+    this.lensAudioRelpath = null;
     const _meshEl = overlayMedia.querySelector(".assets-plus-overlay-mesh");
     if (_meshEl) { _meshEl.removeAttribute("src"); _meshEl.style.display = "none"; }
     const _dlEl = overlayMedia.querySelector(".assets-plus-overlay-download");
@@ -241,17 +257,26 @@ export const overlayAPI = {
       overlayVideo.style.display = "block";
       overlayVideo.src = viewUrl;
     } else if (item.type === "audio") {
-      let audio = _audioEl;
-      if (!audio) {
-        audio = document.createElement("audio");
-        audio.className = "assets-plus-overlay-audio";
-        audio.controls = true;
-        audio.style.maxWidth = "90%";
-        audio.style.margin = "auto";
-        overlayMedia.appendChild(audio);
-      }
-      audio.src = viewUrl;
-      audio.style.display = "block";
+      const control = createAudioControl("lens", {
+        key: `${this.state.tab}|${item.relpath}|${itemVersion(item)}`,
+        url: viewUrl,
+        label: item.filename,
+        bars: 96,
+        prev: () => this.navigateOverlay(-1),
+        next: () => this.navigateOverlay(1),
+        labels: {
+          play: t("audio.play"),
+          pause: t("audio.pause"),
+          prev: t("overlay.previous"),
+          next: t("overlay.next"),
+          mute: t("audio.mute"),
+          volume: t("audio.volume"),
+        },
+      });
+      this.lensAudioRelpath = item.relpath;
+      control.element.classList.add("assets-plus-overlay-audio");
+      control.element._control = control;
+      overlayMedia.appendChild(control.element);
     } else if (item.type === "mesh") {
       // Lazily load the locally-bundled <model-viewer> (works offline / in air-gapped installs).
       if (!customElements.get("model-viewer")) {

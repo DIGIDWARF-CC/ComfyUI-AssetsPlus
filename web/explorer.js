@@ -7,8 +7,10 @@ import {
   DEFAULT_DELETE_MODE, DEFAULT_CONFIRM_DELETE,
   DEFAULT_CONFIRM_DELETE_STARRED, DEFAULT_STARRED_FIRST,
   DEFAULT_SHOW_OVERLAY_HELP, DEFAULT_KEEP_OVERLAY_OPEN_ON_WORKFLOW,
-  THUMB_QUALITY_SIZES, VIDEO_THUMB_EXTENSIONS, DEFAULT_EXTENSIONS
+  THUMB_QUALITY_SIZES, VIDEO_THUMB_EXTENSIONS, DEFAULT_EXTENSIONS,
+  VIEW_MODES, DEFAULT_VIEW_MODE, VIEW_MODE_STORAGE_KEY
 } from './constants.js';
+import { createAudioControl } from './audio.js';
 import {
   log, warn, sleep, clamp, resolveApp, fetchJson, buildViewUrl, itemVersion,
   buildThumbUrl, getFileExtension, normalizeWorkflow,
@@ -26,6 +28,40 @@ const INITIAL_HYDRATED = 60;
 // Corner badge icon per media type (images need none: the thumbnail says it all).
 const CARD_KIND_ICONS = { video: "pi-video", audio: "pi-volume-up" };
 
+// A music note for audio tiles (PrimeIcons has none).
+const AUDIO_NOTE_SVG =
+  '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 17V6l10-2v11" fill="none" stroke="currentColor" ' +
+  'stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><circle cx="7" cy="17" r="2.4" fill="none" ' +
+  'stroke="currentColor" stroke-width="1.7"/><circle cx="17" cy="15" r="2.4" fill="none" stroke="currentColor" ' +
+  'stroke-width="1.7"/></svg>';
+
+const VIEW_MODE_ICONS = { list: "pi-list", small: "pi-th-large", large: "pi-objects-column" };
+
+const loadViewMode = () => {
+  try {
+    const stored = window.localStorage?.getItem(VIEW_MODE_STORAGE_KEY);
+    return VIEW_MODES.includes(stored) ? stored : DEFAULT_VIEW_MODE;
+  } catch {
+    return DEFAULT_VIEW_MODE;
+  }
+};
+
+const formatBytes = (bytes) => {
+  if (!Number.isFinite(bytes)) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(value < 10 && unit > 0 ? 2 : value < 100 ? 1 : 0)} ${units[unit]}`;
+};
+
+const formatShortDate = (seconds) =>
+  new Date(seconds * 1000).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
+
 export class AssetsPlusExplorer {
   constructor(appInstance, container) {
     this.app = appInstance;
@@ -40,6 +76,7 @@ export class AssetsPlusExplorer {
       error: null,
       search: "",
       searchVisible: false,
+      viewMode: loadViewMode(),
       selected: new Set(),
       selectionMode: false,
       selectionAnchor: null,
@@ -144,6 +181,11 @@ export class AssetsPlusExplorer {
       attrs: { title: t("actions.search"), "aria-label": t("actions.search") },
     });
     searchToggle.innerHTML = '<i class="pi pi-search"></i>';
+    const viewButton = createElement("button", {
+      className: "assets-plus-action-button assets-plus-view-button",
+      attrs: { title: t("actions.view"), "aria-label": t("actions.view"), "aria-haspopup": "menu" },
+    });
+    viewButton.innerHTML = '<i class="pi pi-sliders-h"></i>';
     const selectModeButton = createElement("button", {
       className: "assets-plus-action-button",
       attrs: {
@@ -188,6 +230,7 @@ export class AssetsPlusExplorer {
     deleteButton.innerHTML = '<i class="pi pi-trash"></i>';
 
     actionsBar.appendChild(searchToggle);
+    actionsBar.appendChild(viewButton);
     actionsBar.appendChild(selectModeButton);
     actionsBar.appendChild(selectAllButton);
     actionsBar.appendChild(invertSelectionButton);
@@ -218,6 +261,11 @@ export class AssetsPlusExplorer {
     const contextMenu = createElement("div", { className: "assets-plus-context-menu" });
     const contextMenuList = createElement("div", { className: "assets-plus-context-menu-list" });
     contextMenu.appendChild(contextMenuList);
+
+    // View menu (list / small tiles / large tiles); lives in <body> like the tile menu.
+    const viewMenu = createElement("div", { className: "assets-plus-context-menu assets-plus-view-menu" });
+    const viewMenuList = createElement("div", { className: "assets-plus-context-menu-list" });
+    viewMenu.appendChild(viewMenuList);
 
     const overlay = createElement("div", { className: "assets-plus-overlay" });
     const overlayTop = createElement("div", { className: "assets-plus-overlay-top" });
@@ -395,6 +443,7 @@ export class AssetsPlusExplorer {
     this.container.appendChild(root);
     this.container.appendChild(overlay);
     document.body.appendChild(contextMenu);
+    document.body.appendChild(viewMenu);
 
     this.elements = {
       root,
@@ -403,6 +452,9 @@ export class AssetsPlusExplorer {
       inputTab,
       refreshButton,
       searchToggle,
+      viewButton,
+      viewMenu,
+      viewMenuList,
       selectModeButton,
       selectAllButton,
       invertSelectionButton,
@@ -462,6 +514,11 @@ export class AssetsPlusExplorer {
     this.setupThumbObserver();
 
     this.updateSearchVisibility();
+    this.applyViewMode();
+    viewButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      this.toggleViewMenu();
+    });
 
     // The refresh button is the user saying "look again": bypass the server's folder snapshot.
     refreshButton.addEventListener("click", () => this.refreshList({ fresh: true }));
@@ -564,6 +621,10 @@ export class AssetsPlusExplorer {
     if (searchToggle) {
       searchToggle.setAttribute("title", t("actions.search"));
       searchToggle.setAttribute("aria-label", t("actions.search"));
+    }
+    if (this.elements.viewButton) {
+      this.elements.viewButton.setAttribute("title", t("actions.view"));
+      this.elements.viewButton.setAttribute("aria-label", t("actions.view"));
     }
     if (selectAllButton) {
       selectAllButton.setAttribute("title", t("actions.select_all"));
@@ -835,6 +896,9 @@ export class AssetsPlusExplorer {
     if (this.elements?.contextMenu?.parentNode) {
       this.elements.contextMenu.parentNode.removeChild(this.elements.contextMenu);
     }
+    if (this.elements?.viewMenu?.parentNode) {
+      this.elements.viewMenu.parentNode.removeChild(this.elements.viewMenu);
+    }
     if (this.container) {
       this.container.classList.remove("assets-plus-container");
     }
@@ -895,7 +959,9 @@ export class AssetsPlusExplorer {
           DEFAULT_KEEP_OVERLAY_OPEN_ON_WORKFLOW
         )
       ),
-      thumbnailSize,
+      // Large tiles want the sharper preview, rows only show a small one.
+      thumbnailSize:
+        this.state.viewMode === "large" ? THUMB_QUALITY_SIZES.high : this.state.viewMode === "list" ? THUMB_QUALITY_SIZES.low : thumbnailSize,
       thumbnailQuality: resolveThumbnailQuality(thumbnailQuality, configThumbnailSize),
       extensions: (config.allowed_extensions || DEFAULT_EXTENSIONS).map((ext) =>
         ext.startsWith(".") ? ext.slice(1) : ext
@@ -1205,6 +1271,9 @@ export class AssetsPlusExplorer {
   }
 
   handleDocumentClick(event) {
+    if (!event.target.closest(".assets-plus-view-menu") && !event.target.closest(".assets-plus-view-button")) {
+      this.closeViewMenu();
+    }
     if (event.target.closest(".assets-plus-context-menu")) return;
     if (event.target.closest(".assets-plus-card-more")) return;
     this.closeContextMenu();
@@ -1214,6 +1283,74 @@ export class AssetsPlusExplorer {
     // A right click on a tile opens (or moves) the menu itself; anywhere else it closes it.
     if (event.target.closest?.(".assets-plus-card, .assets-plus-context-menu")) return;
     this.closeContextMenu();
+  }
+
+  /** Mirror the view mode on the root element (the CSS does the rest). */
+  applyViewMode() {
+    const { root } = this.elements;
+    if (!root) return;
+    VIEW_MODES.forEach((mode) => root.classList.toggle(`assets-plus-view-${mode}`, mode === this.state.viewMode));
+  }
+
+  setViewMode(mode) {
+    if (!VIEW_MODES.includes(mode) || mode === this.state.viewMode) return;
+    this.state.viewMode = mode;
+    try {
+      window.localStorage?.setItem(VIEW_MODE_STORAGE_KEY, mode);
+    } catch {
+      // The choice then lasts until the page is reloaded.
+    }
+    this.applyViewMode();
+    this.closeContextMenu();
+    // Tiles and rows are built differently: rebuild them (the scroll position is kept by renderGrid).
+    this.renderGrid({ reset: true });
+  }
+
+  renderViewMenu() {
+    const { viewMenuList } = this.elements;
+    viewMenuList.innerHTML = "";
+    VIEW_MODES.forEach((mode) => {
+      const button = createElement("button", { className: "assets-plus-context-menu-item" });
+      const icon = document.createElement("i");
+      icon.className = `pi ${VIEW_MODE_ICONS[mode]}`;
+      const label = document.createElement("span");
+      label.textContent = t(`view.${mode}`);
+      const check = document.createElement("i");
+      check.className = `pi pi-check assets-plus-view-check${mode === this.state.viewMode ? "" : " hidden"}`;
+      button.append(icon, label, check);
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        this.closeViewMenu();
+        this.setViewMode(mode);
+      });
+      viewMenuList.appendChild(button);
+    });
+  }
+
+  toggleViewMenu() {
+    const { viewMenu, viewButton } = this.elements;
+    if (viewMenu.classList.contains("open")) {
+      this.closeViewMenu();
+      return;
+    }
+    this.closeContextMenu();
+    this.renderViewMenu();
+    viewMenu.style.visibility = "hidden";
+    viewMenu.classList.add("open");
+    const rect = viewButton.getBoundingClientRect();
+    const menuRect = viewMenu.getBoundingClientRect();
+    const left = Math.max(8, Math.min(rect.left, window.innerWidth - menuRect.width - 8));
+    viewMenu.style.left = `${left}px`;
+    viewMenu.style.top = `${rect.bottom + 6}px`;
+    viewMenu.style.visibility = "";
+    viewButton.setAttribute("aria-expanded", "true");
+  }
+
+  closeViewMenu() {
+    const { viewMenu, viewButton } = this.elements;
+    if (!viewMenu) return;
+    viewMenu.classList.remove("open");
+    viewButton?.setAttribute("aria-expanded", "false");
   }
 
   closeContextMenu() {
@@ -1504,6 +1641,7 @@ export class AssetsPlusExplorer {
   buildCard(item, thumbnailSize) {
     const card = createElement("div", { className: "assets-plus-card" });
     card.setAttribute("data-relpath", item.relpath);
+    card.setAttribute("data-type", item.type);
     card.classList.toggle("selected", this.state.selected.has(item.relpath));
     card.classList.toggle("starred", Boolean(item.starred));
     card.draggable = !this.state.selectionMode;
@@ -1528,10 +1666,40 @@ export class AssetsPlusExplorer {
     const selectMark = createElement("div", { className: "assets-plus-select-mark" });
     selectMark.innerHTML = '<i class="pi pi-check"></i>';
 
+    const isList = this.state.viewMode === "list";
+    const isAudio = item.type === "audio";
+    const version = itemVersion(item);
     const thumb = createElement("div", { className: "assets-plus-thumb" });
-    const thumbUrl = buildThumbUrl(item.relpath, this.state.tab, thumbnailSize, itemVersion(item));
+    const thumbUrl = buildThumbUrl(item.relpath, this.state.tab, thumbnailSize, version);
     const extension = getFileExtension(item.filename);
-    if (item.type === "video" && VIDEO_THUMB_EXTENSIONS.has(extension)) {
+    const audioLabels = {
+      play: t("audio.play"),
+      pause: t("audio.pause"),
+      prev: t("audio.previous"),
+      next: t("audio.next"),
+      mute: t("audio.mute"),
+      volume: t("audio.volume"),
+    };
+    let audioControl = null;
+    if (isAudio) {
+      // No server thumbnail for sound: a note, and (in tiles) the player right on it.
+      thumb.classList.add("assets-plus-thumb-audio");
+      const note = createElement("div", { className: "assets-plus-audio-note" });
+      note.innerHTML = AUDIO_NOTE_SVG;
+      thumb.appendChild(note);
+      if (!isList) {
+        thumb.appendChild(createElement("div", { className: "assets-plus-audio-caption", text: t("audio.label") }));
+      }
+      audioControl = createAudioControl(isList ? "row" : "tile", {
+        key: `${this.state.tab}|${item.relpath}|${version}`,
+        url: buildViewUrl(item.relpath, this.state.tab, version),
+        label: item.relpath,
+        bars: isList ? 36 : 32,
+        labels: audioLabels,
+      });
+      card._audioControl = audioControl;
+      if (!isList) thumb.appendChild(audioControl.element);
+    } else if (item.type === "video" && VIDEO_THUMB_EXTENSIONS.has(extension)) {
       const video = document.createElement("video");
       video.muted = true;
       video.loop = true;
@@ -1558,7 +1726,27 @@ export class AssetsPlusExplorer {
     });
 
     card.appendChild(thumb);
-    const kindIcon = CARD_KIND_ICONS[item.type];
+    if (isList) {
+      // Two lines per row, always: the name, then size and date (or, for sound, the player).
+      const main = createElement("div", { className: "assets-plus-row-main" });
+      const name = createElement("div", { className: "assets-plus-row-name", attrs: { title: item.relpath } });
+      const tailLength = Math.min(12, Math.max(4, Math.floor(item.relpath.length / 3)));
+      name.appendChild(createElement("span", { className: "assets-plus-row-name-head", text: item.relpath.slice(0, -tailLength) }));
+      name.appendChild(createElement("span", { className: "assets-plus-row-name-tail", text: item.relpath.slice(-tailLength) }));
+      main.appendChild(name);
+      if (audioControl) {
+        main.appendChild(audioControl.element);
+      } else {
+        main.appendChild(
+          createElement("div", {
+            className: "assets-plus-row-meta",
+            text: `${formatBytes(item.size)} · ${formatShortDate(item.mtime)}`,
+          })
+        );
+      }
+      card.appendChild(main);
+    }
+    const kindIcon = isList || isAudio ? null : CARD_KIND_ICONS[item.type];
     if (kindIcon) {
       const kindBadge = createElement("div", { className: "assets-plus-card-kind" });
       kindBadge.innerHTML = `<i class="pi ${kindIcon}"></i>`;
@@ -1599,6 +1787,8 @@ export class AssetsPlusExplorer {
     if (!card._hydrated) return;
     if (card.classList.contains("menu-open") || card.contains(document.activeElement)) return;
     card.querySelectorAll("[data-src]").forEach((media) => this.thumbObserver?.unobserve(media));
+    card._audioControl?.destroy();
+    card._audioControl = null;
     card.replaceChildren();
     card._hydrated = false;
   }
@@ -1689,6 +1879,7 @@ export class AssetsPlusExplorer {
     const filtered = this.getFilteredItems();
     if (reset) {
       this.rememberScrollPosition();
+      grid.querySelectorAll(".assets-plus-card").forEach((card) => card._audioControl?.destroy());
       grid.innerHTML = "";
       this.setupThumbObserver();
     }
@@ -1810,6 +2001,7 @@ export class AssetsPlusExplorer {
     this.elements.grid.querySelectorAll(".assets-plus-card").forEach((card) => {
       if (!removed.has(card.getAttribute("data-relpath"))) return;
       card.querySelectorAll("[data-src]").forEach((media) => this.thumbObserver?.unobserve(media));
+      card._audioControl?.destroy();
       this.cardObserver?.unobserve(card);
       card.remove();
     });

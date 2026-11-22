@@ -113,5 +113,16 @@
   "settings.formats.audio": "Audio",
   "settings.formats.mesh": "3D models",
   "toast.formats_failed": "Could not save the file formats (at least one must stay on).",
-  "log.formats_failed": "Could not save or load the file formats."
+  "log.formats_failed": "Could not save or load the file formats.",
+  "actions.view": "View",
+  "view.list": "List view",
+  "view.small": "Grid (small)",
+  "view.large": "Grid (large)",
+  "audio.label": "Audio",
+  "audio.play": "Play",
+  "audio.pause": "Pause",
+  "audio.previous": "Previous",
+  "audio.next": "Next",
+  "audio.mute": "Mute",
+  "audio.volume": "Volume"
 }

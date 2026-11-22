@@ -22,6 +22,10 @@
   --assets-plus-accent: var(--p-primary-color, #2563eb);
   --assets-plus-accent-contrast: var(--p-primary-contrast-color, #ffffff);
   --assets-plus-thumb-bg: var(--comfy-menu-bg, var(--bg-color, #0f172a));
+  --assets-plus-thumb-h: 120px;
+  --assets-plus-card-h: 122px;
+  --assets-plus-wave-played: var(--fg-color, #e5e7eb);
+  --assets-plus-wave-idle: rgba(148, 163, 184, 0.45);
   --assets-plus-glyph: var(--fg-color, #e5e7eb);
   --assets-plus-halo: var(--comfy-menu-bg, var(--bg-color, #0f172a));
   background: var(--assets-plus-panel-bg);
@@ -174,9 +178,9 @@
   /* Tiles outside the viewport are not laid out or painted: a full reflow of 6000 tiles dropped from ~700 ms
      to ~80 ms. The tile height is fixed (thumb 120px + border), so the scrollbar stays exact. */
   content-visibility: auto;
-  contain-intrinsic-block-size: auto 122px;
+  contain-intrinsic-block-size: auto var(--assets-plus-card-h);
   /* Tiles far from the viewport are empty shells (see hydrateCard) and must keep their height. */
-  min-height: 122px;
+  min-height: var(--assets-plus-card-h);
   box-sizing: border-box;
 }
 .assets-plus-card.selected {
@@ -301,7 +305,7 @@
 }
 .assets-plus-thumb {
   width: 100%;
-  height: 120px;
+  height: var(--assets-plus-thumb-h);
   background: var(--assets-plus-thumb-bg);
   display: flex;
   align-items: center;
@@ -769,4 +773,257 @@
   min-height: 0;
   flex: 1;
   overflow: auto;
+}
+
+/* ---- View modes: small tiles (default), large tiles, list ---- */
+.assets-plus-view-large {
+  --assets-plus-thumb-h: 200px;
+  --assets-plus-card-h: 202px;
+}
+.assets-plus-view-large .assets-plus-grid {
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+}
+.assets-plus-view-list {
+  --assets-plus-card-h: 64px;
+}
+.assets-plus-view-list .assets-plus-grid {
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+.assets-plus-view-list .assets-plus-card {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  padding: 0 8px;
+  height: var(--assets-plus-card-h);
+}
+.assets-plus-view-list .assets-plus-thumb {
+  flex: 0 0 48px;
+  width: 48px;
+  height: 48px;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.assets-plus-row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-right: 64px;
+}
+.assets-plus-row-name {
+  display: flex;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.assets-plus-row-name-head {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.assets-plus-row-name-tail {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.assets-plus-row-meta {
+  font-size: 12px;
+  opacity: 0.7;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* In a row the star and the hover panel sit at the right edge, vertically centred. */
+.assets-plus-view-list .assets-plus-card-star {
+  right: 8px;
+  bottom: auto;
+  top: 8px;
+}
+.assets-plus-view-list .assets-plus-card-menu {
+  top: auto;
+  bottom: 8px;
+  right: 8px;
+}
+.assets-plus-view-list .assets-plus-select-mark {
+  background: rgba(34, 197, 94, 0.28);
+  justify-content: flex-start;
+  padding-left: 14px;
+}
+.assets-plus-view-list .assets-plus-select-mark .pi {
+  font-size: 26px;
+}
+.assets-plus-view-list .assets-plus-card-kind {
+  display: none;
+}
+
+/* ---- Audio: note tile, waveform, mini player ---- */
+.assets-plus-thumb-audio {
+  position: relative;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--fg-color, #e5e7eb);
+  background: color-mix(in srgb, var(--assets-plus-thumb-bg) 80%, var(--fg-color, #e5e7eb) 8%);
+}
+.assets-plus-audio-note {
+  display: flex;
+  opacity: 0.9;
+}
+.assets-plus-audio-note svg {
+  width: 38px;
+  height: 38px;
+}
+.assets-plus-view-large .assets-plus-audio-note svg {
+  width: 64px;
+  height: 64px;
+}
+.assets-plus-view-list .assets-plus-audio-note svg {
+  width: 26px;
+  height: 26px;
+}
+.assets-plus-audio-caption {
+  font-size: 13px;
+  font-weight: 600;
+}
+.assets-plus-audio {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.assets-plus-audio-tile {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 6px;
+  gap: 6px;
+}
+.assets-plus-audio-button {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(148, 163, 184, 0.28);
+  color: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+.assets-plus-audio-button:hover {
+  background: rgba(148, 163, 184, 0.45);
+}
+.assets-plus-audio-button .pi {
+  font-size: 11px;
+}
+.assets-plus-audio-wave {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 22px;
+  cursor: pointer;
+}
+.assets-plus-audio-time {
+  flex: 0 0 auto;
+  font-size: 11px;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.assets-plus-audio-tile .assets-plus-audio-time {
+  display: none;
+}
+.assets-plus-view-large .assets-plus-audio-tile .assets-plus-audio-time {
+  display: inline;
+}
+.assets-plus-audio-row .assets-plus-audio-wave {
+  max-width: 220px;
+}
+.assets-plus-card[data-type="audio"] .assets-plus-card-star {
+  top: 6px;
+  left: 6px;
+  right: auto;
+  bottom: auto;
+}
+.assets-plus-view-list .assets-plus-card[data-type="audio"] .assets-plus-card-star {
+  top: 8px;
+  left: auto;
+  right: 8px;
+}
+.assets-plus-selection-mode .assets-plus-audio {
+  pointer-events: none;
+}
+
+/* Lens player */
+.assets-plus-audio-lens {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  width: min(680px, 90vw);
+  padding: 22px 26px 18px;
+  border-radius: 16px;
+  background: #1b1b1f;
+  color: #f1f1f4;
+  --assets-plus-wave-played: #ffffff;
+  --assets-plus-wave-idle: rgba(255, 255, 255, 0.35);
+}
+.assets-plus-audio-lens .assets-plus-audio-wavebox {
+  height: 120px;
+}
+.assets-plus-audio-lens .assets-plus-audio-wave {
+  width: 100%;
+  height: 100%;
+}
+.assets-plus-audio-times {
+  display: flex;
+  justify-content: space-between;
+}
+.assets-plus-audio-lens .assets-plus-audio-time {
+  font-size: 12px;
+}
+.assets-plus-audio-transport {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+}
+.assets-plus-audio-centre {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.assets-plus-audio-lens .assets-plus-audio-button {
+  width: 34px;
+  height: 34px;
+  background: transparent;
+}
+.assets-plus-audio-lens .assets-plus-audio-button:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+.assets-plus-audio-lens .assets-plus-audio-play {
+  width: 44px;
+  height: 44px;
+  background: rgba(255, 255, 255, 0.14);
+}
+.assets-plus-audio-lens .assets-plus-audio-button .pi {
+  font-size: 16px;
+}
+.assets-plus-audio-volume {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+.assets-plus-audio-slider {
+  width: 90px;
+  accent-color: #ffffff;
+}
+
+/* View menu */
+.assets-plus-view-check {
+  margin-left: auto;
+}
+.assets-plus-view-check.hidden {
+  visibility: hidden;
 }
