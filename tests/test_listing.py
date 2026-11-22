@@ -320,6 +320,19 @@ def test_file_replaced_under_the_same_name_gets_a_new_fingerprint_and_thumbnail_
     keys = {build_thumb_cache_key(name, item["mtime"], item["size"], 256, 256) for item in (old, new)}
     assert len(keys) == 2, "the thumbnail cache must not serve the old file's thumbnail for the new one"
 
+    # a star belongs to the old file: a file generated again under the name does not inherit it
+    path.write_bytes(b"third version, with a star")
+    os.utime(path, (1_790_000_060, 1_790_000_060))
+    handlers._build_list_response(out, "", {"limit": "0", "fresh": "1"})
+    handlers.set_starred_assets(out, "output", [name], True)
+    starred = handlers._build_list_response(out, "", {"limit": "0", "fresh": "1"})
+    assert next(item for item in starred["items"] if item["relpath"] == name)["starred"]
+    path.unlink()
+    path.write_bytes(b"fourth version, regenerated")
+    os.utime(path, (1_790_000_090, 1_790_000_090))
+    regenerated = handlers._build_list_response(out, "", {"limit": "0", "fresh": "1"})
+    assert not next(item for item in regenerated["items"] if item["relpath"] == name)["starred"]
+
     # the incremental "since" poll reports the replacement too
     since = handlers._build_list_response(out, "", {"limit": "0", "since": str(old["mtime"])})
     assert name in [item["relpath"] for item in since["items"]]

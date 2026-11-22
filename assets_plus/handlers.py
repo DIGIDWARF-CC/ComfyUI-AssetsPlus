@@ -304,7 +304,7 @@ def _prepare_view(base_dir: Path, hidden_prefix: str, params: dict[str, str]) ->
     )
     starred_entries = _reconciled(
         "starred", starred_index_path(), snapshot, starred_scope, load_starred,
-        lambda: update_starred(lambda s: reconcile_marks(s, starred_scope, scanned, strict=False)),
+        lambda: update_starred(lambda s: reconcile_marks(s, starred_scope, scanned, strict=True)),
     )
 
     # A hidden entry only hides the file it was recorded for (same mtime and size).
