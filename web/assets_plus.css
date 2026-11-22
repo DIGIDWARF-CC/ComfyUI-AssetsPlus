@@ -108,6 +108,36 @@
 .assets-plus-settings-button:hover {
   border-color: var(--p-primary-color, #2563eb);
 }
+.assets-plus-formats {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 340px;
+}
+.assets-plus-formats-note {
+  opacity: 0.7;
+}
+.assets-plus-formats-group {
+  border: 1px solid var(--border-color, rgba(148, 163, 184, 0.35));
+  border-radius: 6px;
+  margin: 0;
+  padding: 6px 12px 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+}
+.assets-plus-formats-group legend {
+  padding: 0 4px;
+  font-size: 0.85em;
+  opacity: 0.8;
+}
+.assets-plus-formats-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  margin-right: 0;
+}
 .assets-plus-input {
   width: 100%;
   padding: 6px 8px;

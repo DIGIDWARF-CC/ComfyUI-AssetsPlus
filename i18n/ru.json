@@ -104,5 +104,14 @@
   "settings.log_level.quiet": "Спокойно (баннер при старте, предупреждения)",
   "settings.log_level.info": "Подробно (ещё удаления, переносы, звёзды)",
   "settings.log_level.debug": "Отладка (каждый запрос)",
-  "log.log_level_failed": "Не удалось синхронизировать уровень логов с сервером."
+  "log.log_level_failed": "Не удалось синхронизировать уровень логов с сервером.",
+  "settings.formats": "Assets+ форматы файлов",
+  "settings.formats.loading": "Загрузка...",
+  "settings.formats.unavailable": "Не удалось загрузить список форматов.",
+  "settings.formats.images": "Изображения",
+  "settings.formats.video": "Видео",
+  "settings.formats.audio": "Аудио",
+  "settings.formats.mesh": "3D-модели",
+  "toast.formats_failed": "Не удалось сохранить форматы (хотя бы один должен остаться включённым).",
+  "log.formats_failed": "Не удалось сохранить или загрузить форматы файлов."
 }

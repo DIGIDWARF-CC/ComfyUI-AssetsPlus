@@ -38,7 +38,7 @@ The config file is located at `user/__assets_plus/config.json`. If the file does
 defaults are used.
 
 Available options:
-- `allowed_extensions`: a list of extensions (e.g. `[".png", ".jpg", ".webp"]`).
+- `allowed_extensions`: the formats the gallery shows (e.g. `[".png", ".jpg", ".webp"]`). Best set with the **Assets+ file formats** check boxes in the settings; when every known format is on, the key is removed and formats added in later versions show up on their own. A list written here replaces the defaults, so formats missing from it are hidden; extensions the settings page does not know are kept.
 - `thumbnail_quality`: `"low"` (256px) or `"high"` (512px).
 - `list_limit`: page size for list requests.
 - `recursive`: recursive scan of the output directory (`true/false`).
@@ -48,6 +48,7 @@ Available options:
 - `log_level`: how much Assets+ writes to the console, `"silent" | "quiet" | "info" | "debug"` (default `"quiet"`, also a setting, see below).
 
 UI settings (ComfyUI Settings → Assets+ Explorer):
+- **Assets+ file formats** — check boxes per format (images, video, audio, 3D models); at least one stays on. Saved to `config.json`.
 - **Assets+ page size** — number of items fetched per page.
 - **Assets+ confirm deletions** — toggle confirmation dialogs for delete/hide actions.
 - **Assets+ always confirm deleting starred images** — ask for confirmation when starred items are deleted, even if general confirmations are off.

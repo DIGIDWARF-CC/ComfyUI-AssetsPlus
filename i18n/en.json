@@ -104,5 +104,14 @@
   "settings.log_level.quiet": "Quiet (start-up banner, warnings)",
   "settings.log_level.info": "Info (also deletes, moves, stars)",
   "settings.log_level.debug": "Debug (every request)",
-  "log.log_level_failed": "Could not sync the log level with the server."
+  "log.log_level_failed": "Could not sync the log level with the server.",
+  "settings.formats": "Assets+ file formats",
+  "settings.formats.loading": "Loading...",
+  "settings.formats.unavailable": "Could not load the format list.",
+  "settings.formats.images": "Images",
+  "settings.formats.video": "Video",
+  "settings.formats.audio": "Audio",
+  "settings.formats.mesh": "3D models",
+  "toast.formats_failed": "Could not save the file formats (at least one must stay on).",
+  "log.formats_failed": "Could not save or load the file formats."
 }

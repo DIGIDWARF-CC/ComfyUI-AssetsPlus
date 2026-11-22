@@ -84,6 +84,7 @@ export const SETTINGS = {
   keepOverlayOpenOnWorkflow: "AssetsPlus.KeepOverlayOpenOnWorkflow",
   language: "AssetsPlus.Language",
   logLevel: "AssetsPlus.LogLevel",
+  formats: "AssetsPlus.Formats",
 };
 
 export const SHORTCUT_KEY_LABELS = {

@@ -14,7 +14,9 @@ from typing import Any
 from aiohttp import web
 from server import PromptServer
 
-from .config import LOG_LEVELS, load_config, save_config_value, thumbnail_size_from_quality
+from .config import (
+    FORMAT_GROUPS, LOG_LEVELS, load_config, save_allowed_extensions, save_config_value, thumbnail_size_from_quality,
+)
 from .logs import apply_level
 from .storage import (
     HiddenEntry, load_hidden, load_starred, update_hidden,
@@ -414,6 +416,7 @@ async def assets_plus_config(_: web.Request) -> web.Response:
     return web.json_response(
         {
             "allowed_extensions": list(config.allowed_extensions),
+            "format_groups": {name: list(exts) for name, exts in FORMAT_GROUPS.items()},
             "thumbnail_quality": config.thumbnail_quality,
             "thumbnail_size": list(thumbnail_size),
             "list_limit": config.list_limit,
@@ -423,6 +426,20 @@ async def assets_plus_config(_: web.Request) -> web.Response:
             "log_level": config.log_level,
         }
     )
+
+
+@PromptServer.instance.routes.post("/assets_plus/extensions")
+async def set_extensions(request: web.Request) -> web.Response:
+    """Choose which file formats the gallery shows. The choice is kept in config.json."""
+    payload = await request.json()
+    selected = payload.get("extensions") if isinstance(payload, dict) else None
+    if not isinstance(selected, list):
+        raise web.HTTPBadRequest(text="extensions must be a list")
+    try:
+        allowed = await asyncio.to_thread(save_allowed_extensions, selected)
+    except ValueError as error:
+        raise web.HTTPBadRequest(text=str(error))
+    return web.json_response({"allowed_extensions": list(allowed)})
 
 
 @PromptServer.instance.routes.post("/assets_plus/log_level")

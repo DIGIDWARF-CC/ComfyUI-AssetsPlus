@@ -5,9 +5,11 @@ import { SETTINGS, SETTINGS_CATEGORY, THUMB_QUALITY_SIZES,
          DEFAULT_KEEP_OVERLAY_OPEN_ON_WORKFLOW, DEFAULT_LANGUAGE, DEFAULT_LOG_LEVEL,
          applySettingsCategory } from './constants.js';
 import { createSettingsButtonRenderer, resolveThumbnailQuality } from './utils.js';
+import { createFormatsRenderer } from './formats.js';
 
 const buildSettingsSchema = (
-  t, languageOptions, handleLanguageChange, handleClearThumbnails, handleStarredFirstChange, handleLogLevelChange
+  t, languageOptions, handleLanguageChange, handleClearThumbnails, handleStarredFirstChange, handleLogLevelChange,
+  handlers = {}
 ) => {
   const settingsGroup = t("settings.group");
   const withCategory = (setting) => applySettingsCategory(setting, settingsGroup);
@@ -77,6 +79,12 @@ const buildSettingsSchema = (
       name: t("settings.keep_overlay_open_on_workflow"),
       type: "boolean",
       defaultValue: DEFAULT_KEEP_OVERLAY_OPEN_ON_WORKFLOW,
+    }),
+    withCategory({
+      id: SETTINGS.formats,
+      name: t("settings.formats"),
+      type: createFormatsRenderer(t, handlers.formats),
+      defaultValue: "",
     }),
     withCategory({
       id: SETTINGS.thumbnailQuality,
