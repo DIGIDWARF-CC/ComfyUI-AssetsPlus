@@ -4,6 +4,7 @@ Uses plain asserts (pytest would collect the same ``test_*`` functions). ComfyUI
 """
 from __future__ import annotations
 
+import json
 import os
 import random
 import sys
@@ -382,6 +383,153 @@ def test_delete_and_move_invalidate_the_snapshot() -> None:
     assert mover not in [i["relpath"] for i in after_move["items"]]
     imported = handlers._build_list_response(WORK / "in", "input/", {"limit": "0"})
     assert moved[0]["to"] in [i["relpath"] for i in imported["items"]]
+
+
+def test_log_level_setting_is_coerced_saved_and_applied() -> None:
+    import logging
+
+    from assets_plus import config as config_module
+    from assets_plus import logs
+
+    assert logs.coerce_level("DEBUG ") == "debug" and logs.coerce_level("loud") == "quiet" and logs.coerce_level(None) == "quiet"
+    assert logs.apply_level("silent") == "silent"
+    assert logging.getLogger("assets_plus").level == logging.ERROR
+    assert logging.getLogger("assets_plus.banner").level > logging.CRITICAL, "silent hides the banner too"
+    assert logs.apply_level("quiet") == "quiet"
+    assert logging.getLogger("assets_plus").level == logging.WARNING, "quiet: warnings and errors"
+    assert logging.getLogger("assets_plus.banner").level == logging.INFO, "quiet still shows the banner"
+    assert logs.apply_level("debug") == "debug" and logging.getLogger("assets_plus").level == logging.DEBUG
+
+    class Console(logging.Handler):  # like ComfyUI's console handler: nothing below INFO gets through
+        def __init__(self) -> None:
+            super().__init__(level=logging.INFO)
+            self.lines: list[str] = []
+
+        def emit(self, record: logging.LogRecord) -> None:
+            self.lines.append(record.getMessage())
+
+    console = Console()
+    logging.getLogger().addHandler(console)
+    try:
+        logging.getLogger("assets_plus").debug("every request")
+        assert console.lines == ["every request"], "debug records must reach an INFO console at the debug level"
+        logs.apply_level("info")
+        logging.getLogger("assets_plus").debug("hidden")
+        assert console.lines == ["every request"], "and not at the info level"
+    finally:
+        logging.getLogger().removeHandler(console)
+    logs.apply_level("quiet")
+
+    path = config_module.config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"list_limit": 321, "log_level": "loud", "update_check": "yes"}', encoding="utf-8")
+    config_module._config_cache = None
+    loaded = config_module.load_config()
+    assert loaded.log_level == "quiet" and loaded.update_check is True and loaded.list_limit == 321
+
+    config_module.save_config_value("log_level", "info")
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved == {"list_limit": 321, "log_level": "info", "update_check": "yes"}, "other keys must survive"
+    assert config_module.load_config().log_level == "info", "saving must refresh the cached config"
+    path.unlink()
+    config_module._config_cache = None
+
+
+def test_banner_text_and_update_detection() -> None:
+    from assets_plus import updates
+
+    releases = [
+        {"version": "1.0.3", "status": "NodeVersionStatusActive"},
+        {"version": "1.1.2", "status": "NodeVersionStatusFlagged"},
+        {"version": "1.2.0", "status": "NodeVersionStatusFlagged"},
+        {"version": "9.9.9", "status": "NodeVersionStatusDeleted"},
+        {"version": "pre", "status": "NodeVersionStatusActive"},
+    ]
+    assert updates.parse_version("v1.2.3") == (1, 2, 3) and updates.parse_version("1.2") is None
+    assert updates.newest_release(releases) == ("1.2.0", "NodeVersionStatusFlagged"), "deleted and odd versions are ignored"
+
+    text = updates.compose_banner("1.1.2", "main", "a" * 40, releases=releases, main_commit="b" * 40)
+    assert "Assets+ v1.1.2" in text and "nightly aaaaaaa" in text
+    assert "release 1.2.0 is available" in text and "flagged" in text, "a newer flagged release is still reported"
+    assert "aaaaaaa → bbbbbbb" in text
+
+    current = updates.compose_banner("1.2.0", None, None, releases=releases, main_commit=None)
+    assert "release" in current and "this release is flagged" in current and "up to date" not in current
+    clean = updates.compose_banner("1.0.3", "main", "c" * 40, releases=[{"version": "1.0.3", "status": "NodeVersionStatusActive"}], main_commit="c" * 40)
+    assert "up to date" in clean and "↑" not in clean
+    offline = updates.compose_banner("1.1.2", "main", "c" * 40, releases=None, main_commit=None)
+    assert "up to date" not in offline and "↑" not in offline, "nothing is claimed when nothing was checked"
+    assert "\033[" in updates.compose_banner("1.1.2", None, None, color=True) and "\033[" not in offline
+    feature_branch = updates.compose_banner("1.1.2", "feat/x", "d" * 40, releases=[], main_commit="e" * 40)
+    assert "nightly: newer code" not in feature_branch, "only a clone on main is compared with main"
+
+
+def test_local_version_and_git_head_are_read_from_files() -> None:
+    from assets_plus import updates
+
+    root = WORK / "installed"
+    (root / ".git" / "refs" / "heads").mkdir(parents=True, exist_ok=True)
+    (root / "pyproject.toml").write_text('[project]\nname = "x"\nversion = "2.3.4"\n', encoding="utf-8")
+    assert updates.local_version(root) == "2.3.4" and updates.local_version(WORK / "nowhere") is None
+    assert updates.local_git(WORK / "nowhere") == (None, None), "not a clone"
+    (root / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (root / ".git" / "refs" / "heads" / "main").write_text("f" * 40 + "\n", encoding="utf-8")
+    assert updates.local_git(root) == ("main", "f" * 40)
+    (root / ".git" / "refs" / "heads" / "main").unlink()
+    (root / ".git" / "packed-refs").write_text("# pack-refs\n" + "9" * 40 + " refs/heads/main\n", encoding="utf-8")
+    assert updates.local_git(root) == ("main", "9" * 40), "packed refs"
+    (root / ".git" / "HEAD").write_text("1" * 40 + "\n", encoding="utf-8")
+    assert updates.local_git(root) == (None, "1" * 40), "detached HEAD"
+
+
+def test_announce_logs_one_banner_and_survives_a_dead_network() -> None:
+    import logging
+
+    from assets_plus import config as config_module
+    from assets_plus import logs, updates
+
+    class Capture(logging.Handler):
+        def __init__(self) -> None:
+            super().__init__()
+            self.records: list[logging.LogRecord] = []
+
+        def emit(self, record: logging.LogRecord) -> None:
+            self.records.append(record)
+
+    capture = Capture()
+    banner_logger = logging.getLogger("assets_plus.banner")
+    banner_logger.addHandler(capture)
+    root = WORK / "announce_root"
+    (root / ".git" / "refs" / "heads").mkdir(parents=True, exist_ok=True)
+    (root / "pyproject.toml").write_text('version = "1.1.2"\n', encoding="utf-8")
+    (root / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (root / ".git" / "refs" / "heads" / "main").write_text("a" * 40, encoding="utf-8")
+    calls = []
+
+    def dead() -> list:
+        calls.append("registry")
+        raise OSError("offline")
+
+    try:
+        logs.apply_level("quiet")
+        config_module._config_cache = None
+        text = updates.announce(dead, lambda: (_ for _ in ()).throw(OSError("offline")), root)
+        assert "Assets+ v1.1.2" in text and "up to date" not in text and len(capture.records) == 1
+        assert capture.records[0].levelno == logging.INFO
+
+        logs.apply_level("silent")
+        updates.announce(dead, lambda: None, root)
+        assert len(capture.records) == 1, "silent: no banner"
+        logs.apply_level("quiet")
+
+        config_module.save_config_value("update_check", False)
+        calls.clear()
+        updates.announce(dead, lambda: None, root)
+        assert not calls, "update_check=false must not touch the network"
+    finally:
+        banner_logger.removeHandler(capture)
+        config_module.config_path().unlink(missing_ok=True)
+        config_module._config_cache = None
 
 
 def run() -> int:

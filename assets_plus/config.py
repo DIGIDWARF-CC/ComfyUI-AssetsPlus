@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -27,8 +28,11 @@ class AssetsPlusConfig:
     recursive: bool = True
     default_delete_mode: str = "trash"
     scan_depth: int | None = None
+    log_level: str = "quiet"
+    update_check: bool = True
 
 
+LOG_LEVELS = ("silent", "quiet", "info", "debug")
 DEFAULT_CONFIG = AssetsPlusConfig()
 THUMBNAIL_QUALITY_SIZES: dict[str, tuple[int, int]] = {
     "low": (256, 256),
@@ -147,6 +151,13 @@ def load_config() -> AssetsPlusConfig:
 
     scan_depth = _coerce_scan_depth(raw.get("scan_depth", DEFAULT_CONFIG.scan_depth))
 
+    log_level = str(raw.get("log_level", DEFAULT_CONFIG.log_level)).strip().lower()
+    if log_level not in LOG_LEVELS:
+        log_level = DEFAULT_CONFIG.log_level
+    update_check = raw.get("update_check", DEFAULT_CONFIG.update_check)
+    if not isinstance(update_check, bool):
+        update_check = DEFAULT_CONFIG.update_check
+
     config = AssetsPlusConfig(
         allowed_extensions=allowed_extensions,
         thumbnail_quality=thumbnail_quality,
@@ -154,7 +165,29 @@ def load_config() -> AssetsPlusConfig:
         recursive=recursive,
         default_delete_mode=default_delete_mode,
         scan_depth=scan_depth,
+        log_level=log_level,
+        update_check=update_check,
     )
     _config_cache = config
     _config_cache_ts = now
     return config
+
+
+def save_config_value(key: str, value: Any) -> None:
+    """Write one key into config.json, keeping every other key (and the file's other content) as it is."""
+    global _config_cache
+    path = config_path()
+    raw: dict[str, Any] = {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            raw = loaded
+    except (OSError, json.JSONDecodeError):
+        pass
+    raw[key] = value
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(raw, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp_path, path)
+    _config_cache = None  # the next load_config() reads the file again
+

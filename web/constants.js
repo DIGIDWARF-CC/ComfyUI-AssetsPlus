@@ -22,6 +22,7 @@ export const DEFAULT_STARRED_FIRST = false;
 export const DEFAULT_SHOW_OVERLAY_HELP = true;
 export const DEFAULT_KEEP_OVERLAY_OPEN_ON_WORKFLOW = false;
 export const DEFAULT_LANGUAGE = "en";
+export const DEFAULT_LOG_LEVEL = "quiet";
 export const SETTINGS_CATEGORY = "Assets+";
 export const ASSETS_PLUS_SHORTCUTS_CATEGORY = "assets-plus";
 export const ASSETS_PLUS_SHORTCUTS_TAB_ID = "shortcuts-assets-plus";
@@ -82,6 +83,7 @@ export const SETTINGS = {
   showOverlayHelp: "AssetsPlus.ShowOverlayHelp",
   keepOverlayOpenOnWorkflow: "AssetsPlus.KeepOverlayOpenOnWorkflow",
   language: "AssetsPlus.Language",
+  logLevel: "AssetsPlus.LogLevel",
 };
 
 export const SHORTCUT_KEY_LABELS = {

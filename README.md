@@ -44,6 +44,8 @@ Available options:
 - `recursive`: recursive scan of the output directory (`true/false`).
 - `default_delete_mode`: `"trash" | "delete" | "hide"`.
 - `scan_depth`: depth limit for recursive scanning (`null` = no limit).
+- `log_level`: how much Assets+ writes to the console, `"silent" | "quiet" | "info" | "debug"` (default `"quiet"`, also a setting, see below).
+- `update_check`: `true` (default) or `false`; whether the start-up banner looks for newer versions (see [Console output](#console-output)).
 
 UI settings (ComfyUI Settings → Assets+ Explorer):
 - **Assets+ page size** — number of items fetched per page.
@@ -54,6 +56,7 @@ UI settings (ComfyUI Settings → Assets+ Explorer):
 - **Assets+ keep overlay open when opening/replacing workflow** — keep the lens overlay open after workflow actions.
 - **Assets+ thumbnail quality** — pick low (256px) or high (512px) previews.
 - **Assets+ clear thumbnail cache** — action button to remove cached previews on disk.
+- **Assets+ console log level** — Silent (errors only), Quiet (default: start-up banner, warnings), Info (also deletes, moves, stars, cache housekeeping), Debug (every request). It is stored in `config.json` on the server.
 
 Example:
 ```json
@@ -89,6 +92,23 @@ Example:
 * Built for big folders: the server keeps a snapshot of the folder tree (revalidated by directory timestamps, rescanned when anything changes) and serves pages lazily from it, workflow detection only runs for the files on the page, and thumbnails are cached by the browser. The lens can jump to the oldest file or step past the loaded part of the gallery without loading everything in between. The refresh button forces a fresh scan.
 * Event-driven updates when ComfyUI emits execution or upload events (no polling).
 * Expanded media support from @svilendotorg: additional image/video formats, audio playback in the overlay, GLB/GLTF mesh previews, and arrow-key overlay navigation.
+
+## Console output
+
+Assets+ is quiet by default. At start-up it prints one banner with the installed version and whether it is a release or a
+nightly (git) copy, and then only warnings and errors:
+
+```
+Assets+ v1.1.2 · nightly e40842e  ✓ up to date
+Assets+ v1.1.2 · nightly e40842e
+  ↑ release 1.2.0 is available (flagged by the registry scan, waiting for a review)
+  ↑ nightly: newer code on main (e40842e → 9ac81d2)
+```
+
+To write that banner, a background thread makes two read-only requests once per start, with a short timeout: the version
+list of this node at `api.comfy.org` (newer releases, flagged or not) and, for a git clone on `main`, the latest commit
+of `main` at `api.github.com`. Nothing is sent but the requests themselves. Offline or blocked, the banner simply has no
+update lines. Set `"update_check": false` in `config.json` to turn the requests off.
 
 ## Deletion modes
 
