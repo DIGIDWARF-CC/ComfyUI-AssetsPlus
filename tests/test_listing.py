@@ -298,6 +298,33 @@ def test_thumbnails_are_shared_between_simultaneous_requests_and_handle_odd_mode
         assert thumb.size[0] <= 128 and thumb.size[1] <= 128 and thumb.mode == "RGB"
 
 
+def test_file_replaced_under_the_same_name_gets_a_new_fingerprint_and_thumbnail_key() -> None:
+    out = prepare_handler_gallery()
+    name = "ComfyUI_0015_.png"
+    path = out / name
+    path.write_bytes(b"first version")
+    os.utime(path, (1_790_000_000, 1_790_000_000))
+    first = handlers._build_list_response(out, "", {"limit": "0", "fresh": "1"})
+    old = next(item for item in first["items"] if item["relpath"] == name)
+
+    path.unlink()  # deleted behind our back, generated again under the same name a bit later
+    path.write_bytes(b"second, longer version")
+    os.utime(path, (1_790_000_030, 1_790_000_030))
+    second = handlers._build_list_response(out, "", {"limit": "0", "fresh": "1"})
+    new = next(item for item in second["items"] if item["relpath"] == name)
+    assert (new["mtime"], new["size"]) != (old["mtime"], old["size"])
+    assert sum(1 for item in second["items"] if item["relpath"] == name) == 1
+
+    from assets_plus.metadata import build_thumb_cache_key
+
+    keys = {build_thumb_cache_key(name, item["mtime"], item["size"], 256, 256) for item in (old, new)}
+    assert len(keys) == 2, "the thumbnail cache must not serve the old file's thumbnail for the new one"
+
+    # the incremental "since" poll reports the replacement too
+    since = handlers._build_list_response(out, "", {"limit": "0", "since": str(old["mtime"])})
+    assert name in [item["relpath"] for item in since["items"]]
+
+
 def test_fine_timestamps_use_the_short_racy_window() -> None:
     assert listing._racy_window(1_790_000_000_123_456_789) == listing.RACY_WINDOW_FINE
     assert listing._racy_window(1_790_000_000_000_000_000) == listing.RACY_WINDOW

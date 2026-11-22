@@ -98,13 +98,19 @@ export const getSettingValue = (appInstance, id, fallback) => {
   return fallback;
 };
 
-export const buildViewUrl = (relpath, directory) => {
+/** Changes whenever the file changes: keeps a browser from showing an old file that was replaced under its name. */
+export const itemVersion = (item) => (item ? `${item.mtime}-${item.size}` : "");
+
+export const buildViewUrl = (relpath, directory, version = "") => {
   const segments = relpath.split("/");
   const filename = segments.pop() ?? relpath;
   const subfolder = segments.join("/");
   const params = new URLSearchParams({ filename, type: directory });
   if (subfolder) {
     params.set("subfolder", subfolder);
+  }
+  if (version) {
+    params.set("v", String(version));
   }
   return `/view?${params.toString()}`;
 };

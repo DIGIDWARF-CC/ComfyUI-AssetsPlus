@@ -10,7 +10,7 @@ import {
   THUMB_QUALITY_SIZES, VIDEO_THUMB_EXTENSIONS, DEFAULT_EXTENSIONS
 } from './constants.js';
 import {
-  log, warn, sleep, clamp, resolveApp, fetchJson, buildViewUrl,
+  log, warn, sleep, clamp, resolveApp, fetchJson, buildViewUrl, itemVersion,
   buildThumbUrl, getFileExtension, normalizeWorkflow,
   workflowFilenameForAsset, resolveWorkflowStore,
   resolveWorkflowActionsService, resolveThumbnailQuality,
@@ -1531,7 +1531,7 @@ export class AssetsPlusExplorer {
       });
       event.dataTransfer.setData("application/x-assetsplus-asset", payload);
       // Keep text/uri-list for notebook-paste compatibility.
-      const viewUrl = buildViewUrl(item.relpath, this.state.tab);
+      const viewUrl = buildViewUrl(item.relpath, this.state.tab, itemVersion(item));
       const absoluteUrl = new URL(viewUrl, window.location.origin).href;
       event.dataTransfer.setData("text/uri-list", absoluteUrl);
       event.dataTransfer.setData("text/plain", absoluteUrl);
@@ -1690,8 +1690,19 @@ export class AssetsPlusExplorer {
     if (!items.length) return;
     const map = new Map(this.state.items.map((item) => [item.relpath, item]));
     items.forEach((item) => map.set(item.relpath, item));
-    const previousCount = this.state.items.length;
+    let previousCount = this.state.items.length;
     const known = new Set(this.state.items.map((item) => item.relpath));
+    // Items that replace a known one (same name, new content): drop the old tile so the new one is built fresh.
+    const replaced = new Set(items.map((item) => item.relpath).filter((relpath) => known.has(relpath)));
+    if (replaced.size) {
+      this.elements.grid.querySelectorAll(".assets-plus-card").forEach((card) => {
+        if (!replaced.has(card.getAttribute("data-relpath"))) return;
+        card.querySelectorAll("[data-src]").forEach((media) => this.thumbObserver?.unobserve(media));
+        card.remove();
+        previousCount -= 1;
+      });
+      replaced.forEach((relpath) => known.delete(relpath));
+    }
     const merged = this.sortItems(Array.from(map.values()));
     this.state.items = merged;
     const available = new Set(merged.map((item) => item.relpath));
@@ -1832,8 +1843,13 @@ export class AssetsPlusExplorer {
       if (epoch !== this.listEpoch) return;
       // The server reports everything from the newest known second (inclusive, so files saved
       // within the same second are not missed); only rebuild the grid for really new items.
-      const known = new Set(this.state.items.map((item) => item.relpath));
-      const items = (payload.items || []).filter((item) => !known.has(item.relpath));
+      // A file that was deleted behind our back and generated again under the same name comes back with a new
+      // mtime/size: it is not "known", it replaces the old tile.
+      const known = new Map(this.state.items.map((item) => [item.relpath, item]));
+      const items = (payload.items || []).filter((item) => {
+        const old = known.get(item.relpath);
+        return !old || old.mtime !== item.mtime || old.size !== item.size;
+      });
       if (items.length) {
         this.mergeNewItems(items);
       }
@@ -1849,7 +1865,7 @@ export class AssetsPlusExplorer {
     const items = targetItem ? [targetItem] : this.getSelectedItems();
     if (!items.length) return;
     for (const item of items) {
-      const url = buildViewUrl(item.relpath, this.state.tab);
+      const url = buildViewUrl(item.relpath, this.state.tab, itemVersion(item));
       try {
         const headResponse = await fetch(url, { method: "HEAD" });
         if (!headResponse.ok) {
