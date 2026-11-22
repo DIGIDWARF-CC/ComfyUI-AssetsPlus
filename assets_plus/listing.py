@@ -186,9 +186,18 @@ class Filters:
     hidden: frozenset[str] | set[str]
     starred: frozenset[str] | set[str]
     query: str = ""  # already stripped and lowercased
+    starred_only: bool = False
+    mtime_min: int | None = None  # keep rows with mtime >= mtime_min
+    mtime_max: int | None = None  # keep rows with mtime < mtime_max
 
     def accepts(self, row: Row) -> bool:
         if row[R_REL] in self.hidden:
+            return False
+        if self.starred_only and row[R_REL] not in self.starred:
+            return False
+        if self.mtime_min is not None and row[R_MTIME] < self.mtime_min:
+            return False
+        if self.mtime_max is not None and row[R_MTIME] >= self.mtime_max:
             return False
         if self.query and self.query not in f"{row[R_NAME]} {row[R_REL]}".lower():
             return False
@@ -205,6 +214,11 @@ def _rows_from(
 ) -> Iterator[Row]:
     """Rows in base order from *start*; *starred* selects only starred (True) / only other (False) rows."""
     rows = snapshot.rows
+    # Rows are newest first, so a time range is a slice: skip what is too new, stop at what is too old.
+    if flt.mtime_max is not None:
+        start = max(start, bisect.bisect_left(snapshot.keys, (-(flt.mtime_max - 1), "")))
+    if flt.mtime_min is not None:
+        floor = flt.mtime_min if floor is None else max(floor, flt.mtime_min)
     for position in range(start, len(rows)):
         row = rows[position]
         if floor is not None and row[R_MTIME] < floor:
@@ -275,13 +289,39 @@ def iter_visible(
             yield row
 
 
+def histogram(snapshot: Snapshot, flt: Filters, edges: list[int]) -> dict[str, Any]:
+    """How many visible rows fall into each interval [edges[i], edges[i + 1]) (edges ascending), plus the oldest
+    and newest visible mtime and the number of visible rows. Used by the date groups and the calendar."""
+    counts = [0] * max(0, len(edges) - 1)
+    total = 0
+    oldest = newest = None
+    for row in snapshot.rows:
+        if not flt.accepts(row):
+            continue
+        mtime = row[R_MTIME]
+        total += 1
+        oldest = mtime if oldest is None or mtime < oldest else oldest
+        newest = mtime if newest is None or mtime > newest else newest
+        slot = bisect.bisect_right(edges, mtime) - 1
+        if 0 <= slot < len(counts):
+            counts[slot] += 1
+    return {"counts": counts, "min": oldest, "max": newest, "total": total}
+
+
 # --- turning rows into API items ----------------------------------------------------------------------
 
-def build_items(base_dir: Path, rows: Iterable[Row], starred: Iterable[str] | set[str]) -> list[dict[str, Any]]:
-    """API items for *rows*; workflow detection (file reads, cached) happens here, for these rows only."""
+def build_items(
+    base_dir: Path, rows: Iterable[Row], starred: Iterable[str] | set[str], *, detect_workflows: bool = True
+) -> list[dict[str, Any]]:
+    """API items for *rows*; workflow detection (file reads, cached) happens here, for these rows only.
+    ``detect_workflows=False`` skips the file reads (``has_workflow`` is then always false)."""
     rows = list(rows)
     starred = starred if isinstance(starred, (set, frozenset)) else set(starred)
-    probes = [(base_dir / row[R_REL], row[R_MTIME], row[R_SIZE]) for row in rows if row[R_KIND] in ("image", "video")]
+    probes = (
+        [(base_dir / row[R_REL], row[R_MTIME], row[R_SIZE]) for row in rows if row[R_KIND] in ("image", "video")]
+        if detect_workflows
+        else []
+    )
     flags = dict(zip((probe[0] for probe in probes), _workflow_pool.map(lambda args: has_workflow(*args), probes)))
     items = []
     for row in rows:

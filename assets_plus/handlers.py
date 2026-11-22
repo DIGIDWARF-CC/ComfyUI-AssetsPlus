@@ -25,7 +25,7 @@ from .storage import (
 from .paths import get_output_directory, get_input_directory, get_i18n_directory, resolve_relpath, load_translation_file, LANGUAGE_CODE_RE
 from .scanner import _classify_kind, _placeholder_png
 from .listing import (
-    Filters, R_MTIME, R_REL, R_SIZE, Snapshot, build_items, get_snapshot, invalidate, iter_visible,
+    Filters, R_MTIME, R_REL, R_SIZE, Snapshot, build_items, get_snapshot, histogram, invalidate, iter_visible,
 )
 from .marks import MarkScope, reconcile_marks
 from . import thumbcache
@@ -96,6 +96,13 @@ def _int_param(params: Any, name: str, default: int, minimum: int = 1, maximum: 
     if value < minimum or (maximum is not None and value > maximum):
         return default
     return value
+
+
+def _optional_int(value: Any) -> int | None:
+    try:
+        return int(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
 
 
 async def _thumb_response(request: web.Request, base_dir: Path, scope: str) -> web.StreamResponse:
@@ -376,7 +383,14 @@ def _prepare_view(base_dir: Path, hidden_prefix: str, params: dict[str, str]) ->
     query = params.get("query") or params.get("q") or ""
     return _View(
         snapshot=snapshot,
-        filters=Filters(hidden=hidden_relpaths, starred=starred, query=query.strip().lower()),
+        filters=Filters(
+            hidden=hidden_relpaths,
+            starred=starred,
+            query=query.strip().lower(),
+            starred_only=params.get("starred_only", "0") in TRUE_VALUES,
+            mtime_min=_optional_int(params.get("mtime_min")),
+            mtime_max=_optional_int(params.get("mtime_max")),
+        ),
         starred_first=params.get("starred_first", "0") in TRUE_VALUES,
     )
 
@@ -404,7 +418,8 @@ def _build_list_response(base_dir: Path, hidden_prefix: str, params: dict[str, s
     has_more = bool(limit) and len(rows) > limit
     if limit:
         rows = rows[:limit]
-    items = build_items(base_dir, rows, view.filters.starred)
+    # ``lite``: no workflow detection (no file reads), e.g. to select a whole date group.
+    items = build_items(base_dir, rows, view.filters.starred, detect_workflows=params.get("lite", "0") not in TRUE_VALUES)
     next_cursor = (
         encode_cursor(items[-1], view.starred_first) if items else params.get("cursor") or ""
     )
@@ -414,6 +429,21 @@ def _build_list_response(base_dir: Path, hidden_prefix: str, params: dict[str, s
         "has_more": has_more,
         "latest_mtime": latest_mtime,
     }
+
+
+MAX_HISTOGRAM_EDGES = 400
+
+
+def _build_histogram_response(base_dir: Path, hidden_prefix: str, params: dict[str, str]) -> dict[str, Any]:
+    """Counts of the visible files per time interval; ``edges`` are epoch seconds, ascending."""
+    try:
+        edges = [int(edge) for edge in (params.get("edges") or "").split(",") if edge]
+    except ValueError:
+        raise web.HTTPBadRequest(text="edges must be integers")
+    if len(edges) > MAX_HISTOGRAM_EDGES or edges != sorted(edges):
+        raise web.HTTPBadRequest(text="edges must be ascending and not too many")
+    view = _prepare_view(base_dir, hidden_prefix, params)
+    return histogram(view.snapshot, view.filters, edges)
 
 
 def _build_window_response(base_dir: Path, hidden_prefix: str, params: dict[str, str]) -> dict[str, Any]:
@@ -456,6 +486,18 @@ async def input_list(request: web.Request) -> web.Response:
     params = request.rel_url.query
     LOGGER.debug("Assets+ input list request params=%s", dict(params))
     result = await asyncio.to_thread(_build_list_response, get_input_directory(), "input/", params)
+    return web.json_response(result)
+
+
+@PromptServer.instance.routes.get("/assets_plus/output/histogram")
+async def output_histogram(request: web.Request) -> web.Response:
+    result = await asyncio.to_thread(_build_histogram_response, get_output_directory(), "", request.rel_url.query)
+    return web.json_response(result)
+
+
+@PromptServer.instance.routes.get("/assets_plus/input/histogram")
+async def input_histogram(request: web.Request) -> web.Response:
+    result = await asyncio.to_thread(_build_histogram_response, get_input_directory(), "input/", request.rel_url.query)
     return web.json_response(result)
 
 

@@ -1064,3 +1064,117 @@
 .assets-plus-thumb-mesh img.pending {
   opacity: 0;
 }
+
+/* ---- Filters, chips, popovers, date groups ---- */
+.assets-plus-filter-button,
+.assets-plus-date-button {
+  position: relative;
+}
+.assets-plus-action-button.has-filter::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--assets-plus-accent);
+}
+.assets-plus-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.assets-plus-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--assets-plus-accent);
+  background: color-mix(in srgb, var(--assets-plus-accent) 18%, transparent);
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.assets-plus-chip .pi {
+  font-size: 10px;
+  opacity: 0.8;
+}
+.assets-plus-chip:hover {
+  background: color-mix(in srgb, var(--assets-plus-accent) 32%, transparent);
+}
+.assets-plus-popover {
+  min-width: 230px;
+}
+.assets-plus-popover-title {
+  padding: 4px 10px 2px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.65;
+}
+.assets-plus-popover-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.assets-plus-popover-row:hover {
+  background: rgba(128, 128, 128, 0.18);
+}
+.assets-plus-popover-row input[type="checkbox"] {
+  accent-color: var(--assets-plus-accent);
+}
+.assets-plus-popover-select {
+  justify-content: space-between;
+}
+.assets-plus-popover-select select {
+  min-width: 130px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color, rgba(148, 163, 184, 0.35));
+  background: var(--comfy-input-bg, #222);
+  color: inherit;
+}
+.assets-plus-popover .assets-plus-context-menu-item:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Date headers, like the Windows Explorer's group headings. */
+.assets-plus-group-header {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px 4px;
+  font-size: 14px;
+  border-bottom: 1px solid var(--assets-plus-border);
+  user-select: none;
+}
+.assets-plus-group-header .pi {
+  font-size: 11px;
+  opacity: 0.6;
+}
+.assets-plus-group-count {
+  opacity: 0.6;
+}
+.assets-plus-selection-mode .assets-plus-group-header {
+  cursor: pointer;
+  border-radius: 6px 6px 0 0;
+}
+.assets-plus-selection-mode .assets-plus-group-header:hover {
+  background: rgba(128, 128, 128, 0.16);
+}
+.assets-plus-selection-mode .assets-plus-group-header.selected {
+  background: rgba(34, 197, 94, 0.28);
+  border-bottom-color: #22c55e;
+}
+.assets-plus-group-header.busy {
+  opacity: 0.55;
+  cursor: progress;
+}

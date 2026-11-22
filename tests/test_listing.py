@@ -583,6 +583,88 @@ def test_handler_list_and_window_endpoints() -> None:
     assert handlers._build_window_response(out, "", {"relpath": hidden_target})["found"] is False
 
 
+def test_time_range_starred_only_histogram_and_names_only() -> None:
+    from aiohttp import web
+
+    from assets_plus.storage import HiddenEntry, starred_key, update_starred
+
+    out = WORK / "ranges"
+    out.mkdir(exist_ok=True)
+    day = 86_400
+    base = 1_700_000_000
+    # two files per day for 0..5 days ago, one far in the past, and a sound two days ago
+    spec = [(f"d{d}_{i}.png", d) for d in range(6) for i in range(2)] + [("old.png", 400), ("voice.mp3", 2)]
+    for name, ago in spec:
+        path = out / name
+        path.write_bytes(b"x")
+        stamp = base - ago * day
+        os.utime(path, (stamp, stamp))
+    age_directories(out)
+
+    everything = handlers._build_list_response(out, "", {"limit": "0"})
+    assert len(everything["items"]) == 14
+
+    # [mtime_min, mtime_max) is a slice of the newest-first order (the end is exclusive)
+    low, high = base - 3 * day, base - 1 * day
+    window_params = {"mtime_min": str(low), "mtime_max": str(high)}
+    ranged = handlers._build_list_response(out, "", {"limit": "0", **window_params})
+    expected = [i["relpath"] for i in everything["items"] if low <= i["mtime"] < high]
+    assert len(expected) == 5, expected  # d3 x2, d2 x2 and the sound
+    assert [i["relpath"] for i in ranged["items"]] == expected
+    paged, cursor = [], ""
+    while True:
+        page = handlers._build_list_response(out, "", {"limit": "2", "cursor": cursor, **window_params})
+        paged += [i["relpath"] for i in page["items"]]
+        if not page["has_more"]:
+            break
+        cursor = page["cursor"]
+    assert paged == expected, "paging inside a time range must see the same rows"
+    window = handlers._build_window_response(out, "", {"relpath": expected[2], **window_params})
+    assert window["found"] and window["total"] == 5
+    assert handlers._build_list_response(out, "", {"limit": "0", "mtime_max": str(base - 500 * day)})["items"] == []
+
+    # lite: the same items, without reading any file for workflow detection
+    lite = handlers._build_list_response(out, "", {"limit": "0", "lite": "1", **window_params})
+    assert [i["relpath"] for i in lite["items"]] == expected and not any(i["has_workflow"] for i in lite["items"])
+
+    # starred only, also with starred-first and a time range
+    starred_names = [expected[0], expected[3]]
+    scanned = {i["relpath"]: i for i in everything["items"]}
+    update_starred(
+        lambda current: {
+            **current,
+            **{
+                starred_key("output", name): HiddenEntry(
+                    relpath=starred_key("output", name), mtime=scanned[name]["mtime"], size=scanned[name]["size"]
+                )
+                for name in starred_names
+            },
+        }
+    )
+    only = handlers._build_list_response(out, "", {"limit": "0", "starred_only": "1"})
+    assert sorted(i["relpath"] for i in only["items"]) == sorted(starred_names)
+    both = handlers._build_list_response(out, "", {"limit": "0", "starred_only": "1", "starred_first": "1", **window_params})
+    assert sorted(i["relpath"] for i in both["items"]) == sorted(starred_names)
+
+    # histogram: one interval per pair of edges
+    edges = [base - ago * day for ago in (6, 5, 4, 3, 2, 1, 0)] + [base + day]
+    result = handlers._build_histogram_response(out, "", {"edges": ",".join(map(str, edges))})
+    assert result["counts"] == [0, 2, 2, 2, 3, 2, 2], result
+    assert result["total"] == 14 and result["min"] == base - 400 * day and result["max"] == base
+    sounds = handlers._build_histogram_response(
+        out, "", {"edges": f"{base - 3 * day},{base - 1 * day}", "extensions": "mp3"}
+    )
+    assert sounds["counts"] == [1] and sounds["total"] == 1
+    starred_counts = handlers._build_histogram_response(out, "", {"edges": f"{base - 7 * day},{base + day}", "starred_only": "1"})
+    assert starred_counts["counts"] == [2]
+    try:
+        handlers._build_histogram_response(out, "", {"edges": "5,3"})
+    except web.HTTPBadRequest:
+        pass
+    else:
+        raise AssertionError("descending edges must be refused")
+
+
 def test_delete_and_move_invalidate_the_snapshot() -> None:
     out = prepare_handler_gallery()
     before = handlers._build_list_response(out, "", {"limit": "0"})

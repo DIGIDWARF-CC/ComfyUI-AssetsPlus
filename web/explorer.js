@@ -12,6 +12,8 @@ import {
 } from './constants.js';
 import { createAudioControl } from './audio.js';
 import { meshPreviews } from './meshpreview.js';
+import { filtersAPI } from './filters.js';
+import { groupOf } from './dategroups.js';
 import {
   log, warn, sleep, clamp, resolveApp, fetchJson, buildViewUrl, itemVersion,
   buildThumbUrl, getFileExtension, normalizeWorkflow,
@@ -116,6 +118,7 @@ export class AssetsPlusExplorer {
       },
     };
     this.elements = {};
+    this.initFilterState();
     this.overlayPanHandler = null;
     this.overlayPanEndHandler = null;
     this.overlayImageLoadId = 0;
@@ -186,6 +189,16 @@ export class AssetsPlusExplorer {
       attrs: { title: t("actions.view"), "aria-label": t("actions.view"), "aria-haspopup": "menu" },
     });
     viewButton.innerHTML = '<i class="pi pi-sliders-h"></i>';
+    const filterButton = createElement("button", {
+      className: "assets-plus-action-button assets-plus-filter-button",
+      attrs: { title: t("actions.filter"), "aria-label": t("actions.filter"), "aria-haspopup": "menu" },
+    });
+    filterButton.innerHTML = '<i class="pi pi-filter"></i>';
+    const dateButton = createElement("button", {
+      className: "assets-plus-action-button assets-plus-date-button",
+      attrs: { title: t("actions.dates"), "aria-label": t("actions.dates"), "aria-haspopup": "menu" },
+    });
+    dateButton.innerHTML = '<i class="pi pi-clock"></i>';
     const selectModeButton = createElement("button", {
       className: "assets-plus-action-button",
       attrs: {
@@ -231,6 +244,8 @@ export class AssetsPlusExplorer {
 
     actionsBar.appendChild(searchToggle);
     actionsBar.appendChild(viewButton);
+    actionsBar.appendChild(filterButton);
+    actionsBar.appendChild(dateButton);
     actionsBar.appendChild(selectModeButton);
     actionsBar.appendChild(selectAllButton);
     actionsBar.appendChild(invertSelectionButton);
@@ -247,6 +262,9 @@ export class AssetsPlusExplorer {
     header.appendChild(titleRow);
     header.appendChild(controls);
     header.appendChild(actionsBar);
+    const chips = createElement("div", { className: "assets-plus-chips" });
+    chips.hidden = true;
+    header.appendChild(chips);
     header.appendChild(searchInput);
 
     const status = createElement("div", { className: "assets-plus-status" });
@@ -453,6 +471,9 @@ export class AssetsPlusExplorer {
       refreshButton,
       searchToggle,
       viewButton,
+      filterButton,
+      dateButton,
+      chips,
       viewMenu,
       viewMenuList,
       selectModeButton,
@@ -515,6 +536,8 @@ export class AssetsPlusExplorer {
 
     this.updateSearchVisibility();
     this.applyViewMode();
+    this.initFilterUi();
+    this.renderChips();
     viewButton.addEventListener("click", (event) => {
       event.stopPropagation();
       this.toggleViewMenu();
@@ -626,6 +649,15 @@ export class AssetsPlusExplorer {
       this.elements.viewButton.setAttribute("title", t("actions.view"));
       this.elements.viewButton.setAttribute("aria-label", t("actions.view"));
     }
+    if (this.elements.filterButton) {
+      this.elements.filterButton.setAttribute("title", t("actions.filter"));
+      this.elements.filterButton.setAttribute("aria-label", t("actions.filter"));
+    }
+    if (this.elements.dateButton) {
+      this.elements.dateButton.setAttribute("title", t("actions.dates"));
+      this.elements.dateButton.setAttribute("aria-label", t("actions.dates"));
+    }
+    this.renderChips();
     if (selectAllButton) {
       selectAllButton.setAttribute("title", t("actions.select_all"));
       selectAllButton.setAttribute("aria-label", t("actions.select_all"));
@@ -899,6 +931,7 @@ export class AssetsPlusExplorer {
     if (this.elements?.viewMenu?.parentNode) {
       this.elements.viewMenu.parentNode.removeChild(this.elements.viewMenu);
     }
+    this.destroyFilterUi();
     if (this.container) {
       this.container.classList.remove("assets-plus-container");
     }
@@ -1071,10 +1104,22 @@ export class AssetsPlusExplorer {
   clearSelection() {
     this.state.selected = new Set();
     this.state.selectionAnchor = null;
+    this.state.selectedGroups.clear();
+    this.state.groupAnchor = null;
+    this.state.offscreen.clear();
+    this.updateGroupHeaderStyles?.();
   }
 
+  /** The selected items: the loaded ones, plus those a whole date group brought in without being loaded. */
   getSelectedItems() {
-    return this.state.items.filter((item) => this.state.selected.has(item.relpath));
+    const items = this.state.items.filter((item) => this.state.selected.has(item.relpath));
+    if (this.state.offscreen.size) {
+      const seen = new Set(items.map((item) => item.relpath));
+      this.state.offscreen.forEach((item, relpath) => {
+        if (this.state.selected.has(relpath) && !seen.has(relpath)) items.push(item);
+      });
+    }
+    return items;
   }
 
   getFilteredItems() {
@@ -1147,6 +1192,8 @@ export class AssetsPlusExplorer {
   }
 
   setSelected(relpath, isSelected) {
+    this.state.selectedGroups.clear();
+    this.updateGroupHeaderStyles();
     if (isSelected) {
       this.state.selected.add(relpath);
     } else {
@@ -1224,6 +1271,8 @@ export class AssetsPlusExplorer {
       this.setSelected(relpath, value);
       return;
     }
+    this.state.selectedGroups.clear();
+    this.updateGroupHeaderStyles();
     const from = Math.min(anchorIndex, index);
     const to = Math.max(anchorIndex, index);
     for (let position = from; position <= to; position += 1) {
@@ -1271,6 +1320,7 @@ export class AssetsPlusExplorer {
   }
 
   handleDocumentClick(event) {
+    this.closeFilterPopovers(event.target);
     if (!event.target.closest(".assets-plus-view-menu") && !event.target.closest(".assets-plus-view-button")) {
       this.closeViewMenu();
     }
@@ -1876,6 +1926,11 @@ export class AssetsPlusExplorer {
       if (cardOf(event) && this.state.selectionMode && event.shiftKey) event.preventDefault();
     });
     grid.addEventListener("click", (event) => {
+      const header = event.target.closest?.(".assets-plus-group-header");
+      if (header && grid.contains(header)) {
+        if (this.state.selectionMode) this.selectGroupFromClick(event, header);
+        return;
+      }
       const item = cardOf(event)?._assetsItem;
       if (!item) return;
       if (this.state.selectionMode) {
@@ -1900,13 +1955,21 @@ export class AssetsPlusExplorer {
     const wasEmpty = grid.children.length === 0;
     const fragment = document.createDocumentFragment();
     items.forEach((item) => {
+      if (this.state.groupByDate) {
+        const group = groupOf(item.mtime, this.groups);
+        if (group.key !== this.groupLastKey) {
+          fragment.appendChild(this.buildGroupHeader(group));
+          this.groupLastKey = group.key;
+        }
+      }
       fragment.appendChild(this.buildCard(item, thumbnailSize));
     });
     grid.appendChild(fragment);
     if (wasEmpty) {
       // The first screenful needs no round trip through the observer.
-      for (let index = 0; index < Math.min(INITIAL_HYDRATED, grid.children.length); index += 1) {
-        this.hydrateCard(grid.children[index]);
+      const cards = grid.querySelectorAll(".assets-plus-card");
+      for (let index = 0; index < Math.min(INITIAL_HYDRATED, cards.length); index += 1) {
+        this.hydrateCard(cards[index]);
       }
     }
     this.updateActionsBar();
@@ -1920,6 +1983,7 @@ export class AssetsPlusExplorer {
       this.rememberScrollPosition();
       grid.querySelectorAll(".assets-plus-card").forEach((card) => card._audioControl?.destroy());
       grid.innerHTML = "";
+      this.resetGroups();
       this.setupThumbObserver();
     }
 
@@ -1957,15 +2021,17 @@ export class AssetsPlusExplorer {
     const params = new URLSearchParams();
     if (fresh) params.set("fresh", "1");
     params.set("limit", String(settings.listLimit));
-    if (settings.extensions?.length) params.set("extensions", settings.extensions.join(","));
+    const extensions = this.activeExtensions(settings.extensions || []);
+    if (extensions.length) params.set("extensions", extensions.join(","));
     if (settings.scanDepth !== null && settings.scanDepth !== undefined) {
       params.set("scan_depth", String(settings.scanDepth));
     } else if (settings.recursive === false) {
       params.set("recursive", "0");
     }
-    if (settings.starredFirst) {
+    if (this.useStarredFirst()) {
       params.set("starred_first", "1");
     }
+    this.applyFilterParams(params);
     const query = this.state.search.trim();
     if (query) {
       params.set("query", query);
@@ -1986,7 +2052,7 @@ export class AssetsPlusExplorer {
 
   /** Newest first; starred items lead when "show starred first" is on. */
   sortItems(items) {
-    const { starredFirst } = this.getSettingsSnapshot();
+    const starredFirst = this.useStarredFirst();
     return items.sort(
       (a, b) =>
         (starredFirst ? Number(Boolean(b.starred)) - Number(Boolean(a.starred)) : 0) ||
@@ -2017,9 +2083,15 @@ export class AssetsPlusExplorer {
     this.state.items = merged;
     const available = new Set(merged.map((item) => item.relpath));
     this.state.selected = new Set(
-      Array.from(this.state.selected).filter((relpath) => available.has(relpath))
+      Array.from(this.state.selected).filter((relpath) => available.has(relpath) || this.state.offscreen.has(relpath))
     );
     const grid = this.elements.grid;
+    if (this.state.groupByDate) {
+      // Date headers sit between the tiles, so positions no longer match: rebuild.
+      this.renderGrid({ reset: true });
+      this.refreshGroupCounts();
+      return;
+    }
     if (grid.children.length !== previousCount) {
       this.renderGrid({ reset: true });
       return;
@@ -2037,6 +2109,11 @@ export class AssetsPlusExplorer {
 
   /** Remove the tiles of the given relpaths without rebuilding the grid. */
   removeCardsFromGrid(removed) {
+    if (this.state.groupByDate) {
+      this.renderGrid({ reset: true });
+      this.refreshGroupCounts();
+      return;
+    }
     this.elements.grid.querySelectorAll(".assets-plus-card").forEach((card) => {
       if (!removed.has(card.getAttribute("data-relpath"))) return;
       card.querySelectorAll("[data-src]").forEach((media) => this.thumbObserver?.unobserve(media));
@@ -2051,6 +2128,10 @@ export class AssetsPlusExplorer {
 
   /** Move the tiles of items whose position changed (e.g. a toggled star with "starred first") in place. */
   repositionCards(changedRelpaths) {
+    if (this.state.groupByDate) {
+      this.renderGrid({ reset: true });
+      return;
+    }
     const grid = this.elements.grid;
     const cards = new Map();
     grid.querySelectorAll(".assets-plus-card").forEach((card) => {
@@ -2084,6 +2165,7 @@ export class AssetsPlusExplorer {
     this.updateLatestMtime(payload.latest_mtime);
     if (reset) {
       this.renderGrid({ reset: true });
+      this.refreshGroupCounts();
     } else {
       this.appendItemsToGrid(items);
       if (!items.length && !this.state.items.length) {
@@ -2290,7 +2372,7 @@ export class AssetsPlusExplorer {
   }
 
   refreshStarVisuals(changedRelpaths) {
-    const { starredFirst } = this.getSettingsSnapshot();
+    const starredFirst = this.useStarredFirst();
     const byPath = new Map(this.state.items.map((entry) => [entry.relpath, entry]));
     if (starredFirst) {
       // Order depends on the star: re-sort, then move only the affected tiles and repaint their stars.
@@ -2340,7 +2422,10 @@ export class AssetsPlusExplorer {
     const nextWindow = this.state.overlay.window;
     if (nextWindow) nextWindow.items = nextWindow.items.filter((item) => !removed.has(item.relpath));
     this.state.items = this.state.items.filter((item) => !removed.has(item.relpath));
-    relpaths.forEach((relpath) => this.state.selected.delete(relpath));
+    relpaths.forEach((relpath) => {
+      this.state.selected.delete(relpath);
+      this.state.offscreen.delete(relpath);
+    });
     this.state.latestMtime = this.state.items.reduce(
       (latest, item) => Math.max(latest, item.mtime),
       0
@@ -2380,7 +2465,10 @@ export class AssetsPlusExplorer {
             title: t("confirm.delete.title"),
             message,
             type: mode === "hide" ? "default" : "delete",
-            itemList: items.map((asset) => asset.filename),
+            itemList: items
+              .slice(0, 100)
+              .map((asset) => asset.filename)
+              .concat(items.length > 100 ? [t("confirm.delete.and_more", { count: items.length - 100 })] : []),
           })) === true;
       } else {
         confirmed = window.confirm(message);
@@ -2531,4 +2619,4 @@ export class AssetsPlusExplorer {
   }
 }
 
-Object.assign(AssetsPlusExplorer.prototype, overlayAPI);
+Object.assign(AssetsPlusExplorer.prototype, overlayAPI, filtersAPI);
