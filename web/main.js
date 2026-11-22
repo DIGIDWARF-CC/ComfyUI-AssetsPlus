@@ -157,7 +157,15 @@ const boot = async () => {
       });
     }, handleClearThumbnails, () => {
       explorerInstance?.refreshList?.();
-    }, handleLogLevelChange),
+    }, handleLogLevelChange, {
+      formats: {
+        onSaved: async () => {
+          await explorerInstance?.loadConfig?.();
+          explorerInstance?.refreshList?.({ fresh: true });
+        },
+        onFailed: () => toast(t("toast.formats_failed"), "error"),
+      },
+    }),
     setup(app) {
       registerSidebarTab(app);
       followServerLogLevel(app);

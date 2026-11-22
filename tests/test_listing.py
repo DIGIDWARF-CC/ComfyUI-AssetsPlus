@@ -595,6 +595,58 @@ def test_log_level_setting_is_coerced_saved_and_applied() -> None:
     config_module._config_cache = None
 
 
+def test_obsolete_config_keys_are_removed_once_and_formats_are_saved() -> None:
+    from assets_plus import config as config_module
+
+    path = config_module.config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "allowed_extensions": ["png", ".JPG", ".png", ".custom"],
+                "thumbnail_size": [512, 512],
+                "poll_seconds": 5,
+                "list_limit": 200,
+            }
+        ),
+        encoding="utf-8",
+    )
+    config_module._config_cache = None
+    config_module._obsolete_keys_checked = False
+    loaded = config_module.load_config()
+    assert loaded.allowed_extensions == (".png", ".jpg", ".custom"), "normalized, without duplicates"
+    assert loaded.thumbnail_quality == "high", "the old thumbnail size becomes a quality"
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert "poll_seconds" not in saved and "thumbnail_size" not in saved, "obsolete keys are gone from the file"
+    assert saved["thumbnail_quality"] == "high" and saved["list_limit"] == 200
+
+    path.write_text('{"allowed_extensions": []}', encoding="utf-8")
+    config_module._config_cache = None
+    assert config_module.load_config().allowed_extensions == config_module.KNOWN_EXTENSIONS, "empty list = defaults"
+
+    # the settings page: known formats switch on and off, unknown ones typed by hand survive
+    path.write_text('{"allowed_extensions": [".png", ".custom"]}', encoding="utf-8")
+    config_module._config_cache = None
+    result = config_module.save_allowed_extensions([".flac", ".png", ".MP3", ".nonsense"])
+    assert result == (".png", ".mp3", ".flac", ".custom"), result
+    assert json.loads(path.read_text(encoding="utf-8"))["allowed_extensions"] == list(result)
+    # custom ones keep the list non-empty, so switching off every known format is allowed
+    assert config_module.save_allowed_extensions([]) == (".custom",)
+
+    path.write_text("{}", encoding="utf-8")
+    config_module._config_cache = None
+    try:
+        config_module.save_allowed_extensions([])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("nothing enabled must be refused")
+    config_module.save_allowed_extensions(list(config_module.KNOWN_EXTENSIONS))
+    assert "allowed_extensions" not in json.loads(path.read_text(encoding="utf-8")), "all on follows the defaults"
+    path.unlink()
+    config_module._config_cache = None
+
+
 def test_banner_text_and_version_come_from_the_own_pyproject() -> None:
     from assets_plus import banner
 
