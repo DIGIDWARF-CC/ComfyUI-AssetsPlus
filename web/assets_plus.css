@@ -810,7 +810,6 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding-right: 64px;
 }
 .assets-plus-row-name {
   display: flex;
@@ -840,11 +839,6 @@
   right: 8px;
   bottom: auto;
   top: 8px;
-}
-.assets-plus-view-list .assets-plus-card-menu {
-  top: auto;
-  bottom: 8px;
-  right: 8px;
 }
 .assets-plus-view-list .assets-plus-select-mark {
   background: rgba(34, 197, 94, 0.28);
@@ -1026,4 +1020,16 @@
 }
 .assets-plus-view-check.hidden {
   visibility: hidden;
+}
+
+/* Rows are quiet: no hover buttons, everything is in the right-click menu. A star shows only as an indicator. */
+.assets-plus-view-list .assets-plus-card-menu,
+.assets-plus-view-list .assets-plus-card-star:not(.active) {
+  display: none;
+}
+.assets-plus-view-list .assets-plus-card-star {
+  pointer-events: none;
+}
+.assets-plus-view-list .assets-plus-row-main {
+  padding-right: 30px;
 }

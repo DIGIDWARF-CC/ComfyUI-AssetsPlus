@@ -28,12 +28,11 @@ const INITIAL_HYDRATED = 60;
 // Corner badge icon per media type (images need none: the thumbnail says it all).
 const CARD_KIND_ICONS = { video: "pi-video", audio: "pi-volume-up" };
 
-// A music note for audio tiles (PrimeIcons has none).
+// A music note for audio tiles (PrimeIcons has none): the "music_note" glyph of Google's Material Icons
+// (Apache-2.0, see VENDORED.md).
 const AUDIO_NOTE_SVG =
-  '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 17V6l10-2v11" fill="none" stroke="currentColor" ' +
-  'stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><circle cx="7" cy="17" r="2.4" fill="none" ' +
-  'stroke="currentColor" stroke-width="1.7"/><circle cx="17" cy="15" r="2.4" fill="none" stroke="currentColor" ' +
-  'stroke-width="1.7"/></svg>';
+  '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" ' +
+  'd="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>';
 
 const VIEW_MODE_ICONS = { list: "pi-list", small: "pi-th-large", large: "pi-objects-column" };
 

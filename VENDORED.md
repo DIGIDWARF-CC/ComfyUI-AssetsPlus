@@ -27,3 +27,9 @@ remote URL.
 Automated security scanners report the minified bundle (it contains generic loader code for models and
 textures). Those findings concern upstream library internals, not Assets+ behavior. See
 [SECURITY.md](SECURITY.md).
+
+## Inline icon
+
+The music note on audio tiles (`AUDIO_NOTE_SVG` in `web/explorer.js`) is the `music_note` glyph of
+[Material Icons](https://github.com/google/material-design-icons) by Google, licensed under Apache-2.0
+(<https://www.apache.org/licenses/LICENSE-2.0>). It is a single SVG path embedded as a string; nothing is downloaded.
