@@ -199,6 +199,110 @@ def test_racy_expired_fresh_and_invalidated_snapshots_are_rescanned() -> None:
         listing.MAX_AGE = old_max_age
 
 
+def test_concurrent_requests_share_one_scan_even_when_racy() -> None:
+    import threading
+
+    root = WORK / "gallery_burst"
+    make_gallery(root, 40, 13)
+    listing.invalidate(root)
+    (root / "just_now.png").write_bytes(b"1")  # racy: a snapshot of this tree is never reused by later requests
+    scans = []
+    original = listing.scan_tree
+
+    def slow_scan(*args, **kwargs):
+        scans.append(1)
+        time.sleep(0.15)  # long enough for every worker to queue up behind the first scan
+        return original(*args, **kwargs)
+
+    listing.scan_tree = slow_scan
+    results = []
+    try:
+        threads = [
+            threading.Thread(target=lambda: results.append(listing.get_snapshot(root, EXTENSIONS, True, None)))
+            for _ in range(6)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    finally:
+        listing.scan_tree = original
+    assert len(results) == 6 and results[0].racy
+    assert len(scans) <= 2, f"{len(scans)} scans for 6 simultaneous requests (expected the first one, shared)"
+    assert all(snap is results[-1] or snap is results[0] for snap in results)
+
+    # a request that arrives after the shared scan finished does not reuse a racy snapshot
+    last = results[-1]
+    again = listing.get_snapshot(root, EXTENSIONS, True, None)
+    assert not last.racy or again is not last
+
+
+def test_marks_are_reconciled_once_per_snapshot_and_index_state() -> None:
+    out = prepare_handler_gallery()
+    everything = handlers._build_list_response(out, "", {"limit": "0"})
+    starred = [item["relpath"] for item in everything["items"][:30]]
+    handlers.set_starred_assets(out, "output", starred, True)
+
+    calls = []
+    original = handlers.reconcile_marks
+    handlers.reconcile_marks = lambda *args, **kwargs: calls.append(1) or original(*args, **kwargs)
+    try:
+        for _ in range(5):
+            page = handlers._build_list_response(out, "", {"limit": "40"})
+        assert len(calls) <= 4, f"reconcile ran {len(calls)} times for 5 identical requests"
+        before = len(calls)
+        handlers._build_list_response(out, "", {"limit": "40"})
+        assert len(calls) == before, "an unchanged snapshot and index must not be reconciled again"
+        assert sum(1 for item in page["items"] if item["starred"]) == 30
+
+        # a star toggle changes the index file: reconcile again, and the star is visible
+        handlers.set_starred_assets(out, "output", starred[:1], False)
+        again = handlers._build_list_response(out, "", {"limit": "40"})
+        assert len(calls) > before and sum(1 for item in again["items"] if item["starred"]) == 29
+    finally:
+        handlers.reconcile_marks = original
+
+
+def test_thumbnails_are_shared_between_simultaneous_requests_and_handle_odd_modes() -> None:
+    import asyncio
+
+    from PIL import Image
+
+    folder = WORK / "thumbs"
+    folder.mkdir(exist_ok=True)
+    source = folder / "cmyk.tif"
+    Image.new("CMYK", (600, 400), (10, 20, 30, 40)).save(source)
+    cache_path = folder / "cmyk_thumb.png"
+    cache_path.unlink(missing_ok=True)
+
+    calls = []
+    original = handlers._make_thumbnail
+
+    def counting(*args):
+        calls.append(1)
+        time.sleep(0.1)
+        return original(*args)
+
+    handlers._make_thumbnail = counting
+
+    async def burst() -> None:
+        await asyncio.gather(*(handlers._generate_thumbnail(source, 128, 128, cache_path) for _ in range(8)))
+
+    try:
+        asyncio.run(burst())
+    finally:
+        handlers._make_thumbnail = original
+    assert len(calls) == 1, f"{len(calls)} conversions for 8 simultaneous requests of one tile"
+    assert not handlers._THUMB_INFLIGHT, "finished work must be forgotten"
+    with Image.open(cache_path) as thumb:
+        assert thumb.size[0] <= 128 and thumb.size[1] <= 128 and thumb.mode == "RGB"
+
+
+def test_fine_timestamps_use_the_short_racy_window() -> None:
+    assert listing._racy_window(1_790_000_000_123_456_789) == listing.RACY_WINDOW_FINE
+    assert listing._racy_window(1_790_000_000_000_000_000) == listing.RACY_WINDOW
+
+
 def test_workflow_detection_only_runs_for_the_returned_page() -> None:
     root = WORK / "gallery_wf"
     make_gallery(root, 150, 11)

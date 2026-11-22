@@ -89,7 +89,9 @@ def reconcile_marks(
     kept: dict[str, HiddenEntry] = {}
     orphans: list[HiddenEntry] = []
     for key, entry in owned.items():
-        current = _fingerprint(scope.base_dir, base_resolved, scope.relpath_of(key))
+        relpath = scope.relpath_of(key)
+        # The listing already knows the fingerprint of every file it walked: no need to stat each mark again.
+        current = scanned.get(relpath) or _fingerprint(scope.base_dir, base_resolved, relpath)
         if current is None:
             orphans.append(entry)
         elif current == (entry.mtime, entry.size):

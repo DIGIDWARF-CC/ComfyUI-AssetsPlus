@@ -6,6 +6,7 @@ import logging
 import os
 import shutil
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -16,8 +17,8 @@ from server import PromptServer
 
 from .config import load_config, thumbnail_size_from_quality
 from .storage import (
-    HiddenEntry, load_hidden, thumb_cache_dir, update_hidden, evict_thumb_cache,
-    starred_key, update_starred,
+    HiddenEntry, load_hidden, load_starred, thumb_cache_dir, update_hidden, evict_thumb_cache,
+    hidden_index_path, starred_index_path, starred_key, update_starred,
 )
 from .paths import get_output_directory, get_input_directory, get_i18n_directory, resolve_relpath, load_translation_file, LANGUAGE_CODE_RE
 from .scanner import _classify_kind, _placeholder_png
@@ -60,21 +61,45 @@ def _set_content_type(response: web.StreamResponse, path: Path) -> None:
     response.headers["Content-Type"] = content_type
 
 
+# Thumbnails get their own small pool: a burst of tiles scrolling into view must not occupy the threads that
+# list, window and delete requests run on, and each decode can need a lot of memory for a large image.
+_THUMB_POOL = ThreadPoolExecutor(max_workers=3, thread_name_prefix="assets-plus-thumb")
+_THUMB_INFLIGHT: dict[Path, asyncio.Future] = {}
+_PNG_MODES = {"1", "L", "LA", "P", "RGB", "RGBA"}
+
+
+def _make_thumbnail(path: Path, width: int, height: int, cache_path: Path) -> None:
+    # Write to a temp file and publish it atomically: a failed or concurrent save must
+    # never leave a truncated PNG at cache_path (it would be served forever).
+    tmp_path = cache_path.with_name(f".{cache_path.name}.{threading.get_ident()}.tmp")
+    try:
+        with Image.open(path) as image:
+            image.draft("RGB", (width * 2, height * 2))  # JPEG: decode at a reduced scale, much cheaper
+            image.thumbnail((width, height))
+            if image.mode not in _PNG_MODES:  # CMYK, 16-bit and float modes cannot be saved as PNG as they are
+                image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+            image.save(tmp_path, format="PNG")
+        os.replace(tmp_path, cache_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    evict_thumb_cache()
+
+
 async def _generate_thumbnail(path: Path, width: int, height: int, cache_path: Path) -> None:
-    """Generate thumbnail in thread pool with timeout."""
-    def _sync_thumb() -> None:
-        # Write to a temp file and publish it atomically: a failed or concurrent save must
-        # never leave a truncated PNG at cache_path (it would be served forever).
-        tmp_path = cache_path.with_name(f".{cache_path.name}.{threading.get_ident()}.tmp")
-        try:
-            with Image.open(path) as image:
-                image.thumbnail((width, height))
-                image.save(tmp_path, format="PNG")
-            os.replace(tmp_path, cache_path)
-        finally:
-            tmp_path.unlink(missing_ok=True)
-        evict_thumb_cache()
-    await asyncio.wait_for(asyncio.to_thread(_sync_thumb), timeout=30.0)
+    """Generate a thumbnail in the thumbnail pool; simultaneous requests for one tile share the work."""
+    future = _THUMB_INFLIGHT.get(cache_path)
+    if future is None:
+        future = asyncio.get_running_loop().run_in_executor(_THUMB_POOL, _make_thumbnail, path, width, height, cache_path)
+        _THUMB_INFLIGHT[cache_path] = future
+
+        def done(finished: asyncio.Future) -> None:
+            _THUMB_INFLIGHT.pop(cache_path, None)
+            if not finished.cancelled():
+                finished.exception()  # mark retrieved even if every waiter went away
+
+        future.add_done_callback(done)
+    # shield: one client giving up (or the timeout) must not cancel the work the others wait for
+    await asyncio.wait_for(asyncio.shield(future), timeout=30.0)
 
 
 def _int_param(params: Any, name: str, default: int, minimum: int = 1, maximum: int | None = None) -> int:
@@ -205,6 +230,32 @@ def delete_assets(
 TRUE_VALUES = {"1", "true", "True"}
 
 
+_RECONCILED: dict[tuple[str, str, str], tuple[Snapshot, tuple[int, int] | None]] = {}
+
+
+def _index_stamp(path: Path) -> tuple[int, int] | None:
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    return stat.st_mtime_ns, stat.st_size
+
+
+def _reconciled(kind: str, index_path: Path, snapshot: Snapshot, scope: MarkScope, load, reconcile):
+    """The hidden/starred entries of a scope, reconciled with the disk at most once per snapshot and index state.
+
+    The reconcile result only depends on the folder snapshot and on the index file, so while neither changed
+    (every scroll step, lens prefetch and since-poll) the entries are just read.
+    """
+    key = (kind, scope.prefix, str(scope.base_dir))
+    memo = _RECONCILED.get(key)
+    if memo is not None and memo[0] is snapshot and memo[1] == _index_stamp(index_path):
+        return load()
+    entries = reconcile()
+    _RECONCILED[key] = (snapshot, _index_stamp(index_path))
+    return entries
+
+
 @dataclass
 class _View:
     """Everything a listing or window request needs, after the indexes were reconciled."""
@@ -247,8 +298,14 @@ def _prepare_view(base_dir: Path, hidden_prefix: str, params: dict[str, str]) ->
         base_dir, prefix=hidden_prefix, other_prefix=None if hidden_prefix else "input/"
     )
     starred_scope = MarkScope(base_dir, prefix=f"{scope_name}/")
-    hidden = update_hidden(lambda h: reconcile_marks(h, hidden_scope, scanned, strict=True))
-    starred_entries = update_starred(lambda s: reconcile_marks(s, starred_scope, scanned, strict=False))
+    hidden = _reconciled(
+        "hidden", hidden_index_path(), snapshot, hidden_scope, load_hidden,
+        lambda: update_hidden(lambda h: reconcile_marks(h, hidden_scope, scanned, strict=True)),
+    )
+    starred_entries = _reconciled(
+        "starred", starred_index_path(), snapshot, starred_scope, load_starred,
+        lambda: update_starred(lambda s: reconcile_marks(s, starred_scope, scanned, strict=False)),
+    )
 
     # A hidden entry only hides the file it was recorded for (same mtime and size).
     hidden_relpaths = set()
@@ -432,7 +489,7 @@ async def output_delete(request: web.Request) -> web.Response:
     if mode not in DELETE_MODES:
         raise web.HTTPBadRequest(text="mode must be trash, delete or hide")
 
-    removed, failed, actual_modes = delete_assets(get_output_directory(), relpaths, mode)
+    removed, failed, actual_modes = await asyncio.to_thread(delete_assets, get_output_directory(), relpaths, mode)
     LOGGER.info("Assets+ delete mode=%s removed=%s failed=%s", mode, removed, failed)
     return web.json_response({"removed": removed, "failed": failed, "mode": mode, "actual_modes": actual_modes})
 
@@ -448,7 +505,9 @@ async def input_delete(request: web.Request) -> web.Response:
     if mode not in DELETE_MODES:
         raise web.HTTPBadRequest(text="mode must be trash, delete or hide")
 
-    removed, failed, actual_modes = delete_assets(get_input_directory(), relpaths, mode, hidden_prefix="input/")
+    removed, failed, actual_modes = await asyncio.to_thread(
+        delete_assets, get_input_directory(), relpaths, mode, hidden_prefix="input/"
+    )
     LOGGER.info("Assets+ input delete mode=%s removed=%s failed=%s", mode, removed, failed)
     return web.json_response({"removed": removed, "failed": failed, "mode": mode, "actual_modes": actual_modes})
 
@@ -502,7 +561,7 @@ async def _star_response(request: web.Request, base_dir: Path, scope: str) -> we
     if not isinstance(relpaths, list):
         raise web.HTTPBadRequest(text="relpaths must be a list")
     starred = bool(payload.get("starred", True))
-    updated, failed = set_starred_assets(base_dir, scope, relpaths, starred)
+    updated, failed = await asyncio.to_thread(set_starred_assets, base_dir, scope, relpaths, starred)
     LOGGER.info("Assets+ %s star starred=%s updated=%s failed=%s", scope, starred, len(updated), len(failed))
     return web.json_response({"updated": updated, "failed": failed, "starred": starred})
 
