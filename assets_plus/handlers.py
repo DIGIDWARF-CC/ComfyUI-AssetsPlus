@@ -14,7 +14,8 @@ from typing import Any
 from aiohttp import web
 from server import PromptServer
 
-from .config import load_config, thumbnail_size_from_quality
+from .config import LOG_LEVELS, load_config, save_config_value, thumbnail_size_from_quality
+from .logs import apply_level
 from .storage import (
     HiddenEntry, load_hidden, load_starred, update_hidden,
     hidden_index_path, starred_index_path, starred_key, update_starred,
@@ -143,9 +144,10 @@ async def _thumb_response(request: web.Request, base_dir: Path, scope: str) -> w
 
     try:
         cached = await _generate_thumbnail(path, width, height, key)
-    except Exception:  # unreadable/huge/odd-mode image or timeout: show a placeholder tile
+    except Exception as error:  # unreadable/huge/odd-mode image or timeout: show a placeholder tile
         thumbcache.remember_failure(key)
-        LOGGER.warning("[Assets+ Explorer] Thumbnail failed for %s", relpath, exc_info=True)
+        LOGGER.info("[Assets+ Explorer] Thumbnail failed for %s: %s", relpath, error)
+        LOGGER.debug("Thumbnail failure details", exc_info=True)
         return placeholder_response("other", cacheable=False)
     return respond(cached)
 
@@ -380,7 +382,7 @@ def _build_window_response(base_dir: Path, hidden_prefix: str, params: dict[str,
 @PromptServer.instance.routes.get("/assets_plus/output/list")
 async def output_list(request: web.Request) -> web.Response:
     params = request.rel_url.query
-    LOGGER.info("Assets+ output list request params=%s", dict(params))
+    LOGGER.debug("Assets+ output list request params=%s", dict(params))
     result = await asyncio.to_thread(_build_list_response, get_output_directory(), "", params)
     return web.json_response(result)
 
@@ -388,7 +390,7 @@ async def output_list(request: web.Request) -> web.Response:
 @PromptServer.instance.routes.get("/assets_plus/input/list")
 async def input_list(request: web.Request) -> web.Response:
     params = request.rel_url.query
-    LOGGER.info("Assets+ input list request params=%s", dict(params))
+    LOGGER.debug("Assets+ input list request params=%s", dict(params))
     result = await asyncio.to_thread(_build_list_response, get_input_directory(), "input/", params)
     return web.json_response(result)
 
@@ -418,8 +420,21 @@ async def assets_plus_config(_: web.Request) -> web.Response:
             "recursive": config.recursive,
             "default_delete_mode": config.default_delete_mode,
             "scan_depth": config.scan_depth,
+            "log_level": config.log_level,
         }
     )
+
+
+@PromptServer.instance.routes.post("/assets_plus/log_level")
+async def set_log_level(request: web.Request) -> web.Response:
+    """Change how much Assets+ writes to the console. The choice is kept in config.json."""
+    payload = await request.json()
+    level = payload.get("level") if isinstance(payload, dict) else None
+    if level not in LOG_LEVELS:
+        raise web.HTTPBadRequest(text="level must be one of: " + ", ".join(LOG_LEVELS))
+    await asyncio.to_thread(save_config_value, "log_level", level)
+    apply_level(level)
+    return web.json_response({"log_level": level})
 
 
 @PromptServer.instance.routes.get("/assets_plus/output/thumb")

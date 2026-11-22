@@ -45,6 +45,7 @@ Available options:
 - `default_delete_mode`: `"trash" | "delete" | "hide"`.
 - `scan_depth`: depth limit for recursive scanning (`null` = no limit).
 - `thumbnail_cache_mb`: size budget of the thumbnail cache in MB (default `500`, minimum `32`); the least recently used thumbnails are removed when it is exceeded.
+- `log_level`: how much Assets+ writes to the console, `"silent" | "quiet" | "info" | "debug"` (default `"quiet"`, also a setting, see below).
 
 UI settings (ComfyUI Settings → Assets+ Explorer):
 - **Assets+ page size** — number of items fetched per page.
@@ -55,6 +56,7 @@ UI settings (ComfyUI Settings → Assets+ Explorer):
 - **Assets+ keep overlay open when opening/replacing workflow** — keep the lens overlay open after workflow actions.
 - **Assets+ thumbnail quality** — pick low (256px) or high (512px) previews.
 - **Assets+ clear thumbnail cache** — action button to remove cached previews on disk.
+- **Assets+ console log level** — Silent (errors only), Quiet (default: start-up banner, warnings), Info (also deletes, moves, stars, cache housekeeping), Debug (every request). It is stored in `config.json` on the server.
 
 Example:
 ```json
@@ -90,6 +92,18 @@ Example:
 * Built for big folders: the server keeps a snapshot of the folder tree (revalidated by directory timestamps, rescanned when anything changes) and serves pages lazily from it, workflow detection only runs for the files on the page, and thumbnails are cached by the browser. The lens can jump to the oldest file or step past the loaded part of the gallery without loading everything in between. The refresh button forces a fresh scan.
 * Event-driven updates when ComfyUI emits execution or upload events (no polling).
 * Expanded media support from @svilendotorg: additional image/video formats, audio playback in the overlay, GLB/GLTF mesh previews, and arrow-key overlay navigation.
+
+## Console output
+
+Assets+ is quiet by default. At start-up it prints one line with the installed version and then only warnings and
+errors:
+
+```
+Assets+ v1.1.2 · ready
+```
+
+It makes no network requests and reads nothing but its own `pyproject.toml` for that line; whether a newer version
+exists is for ComfyUI-Manager to tell you.
 
 ## Deletion modes
 

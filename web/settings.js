@@ -2,12 +2,12 @@ import { SETTINGS, SETTINGS_CATEGORY, THUMB_QUALITY_SIZES,
          DEFAULT_LIST_LIMIT, DEFAULT_THUMB_QUALITY, DEFAULT_DELETE_MODE,
          DEFAULT_CONFIRM_DELETE, DEFAULT_CONFIRM_DELETE_STARRED, DEFAULT_STARRED_FIRST,
          DEFAULT_SHOW_OVERLAY_HELP,
-         DEFAULT_KEEP_OVERLAY_OPEN_ON_WORKFLOW, DEFAULT_LANGUAGE,
+         DEFAULT_KEEP_OVERLAY_OPEN_ON_WORKFLOW, DEFAULT_LANGUAGE, DEFAULT_LOG_LEVEL,
          applySettingsCategory } from './constants.js';
 import { createSettingsButtonRenderer, resolveThumbnailQuality } from './utils.js';
 
 const buildSettingsSchema = (
-  t, languageOptions, handleLanguageChange, handleClearThumbnails, handleStarredFirstChange
+  t, languageOptions, handleLanguageChange, handleClearThumbnails, handleStarredFirstChange, handleLogLevelChange
 ) => {
   const settingsGroup = t("settings.group");
   const withCategory = (setting) => applySettingsCategory(setting, settingsGroup);
@@ -97,6 +97,23 @@ const buildSettingsSchema = (
         }
       }),
       defaultValue: "",
+    }),
+    withCategory({
+      id: SETTINGS.logLevel,
+      name: t("settings.log_level"),
+      type: "combo",
+      defaultValue: DEFAULT_LOG_LEVEL,
+      options: [
+        { text: t("settings.log_level.silent"), value: "silent" },
+        { text: t("settings.log_level.quiet"), value: "quiet" },
+        { text: t("settings.log_level.info"), value: "info" },
+        { text: t("settings.log_level.debug"), value: "debug" },
+      ],
+      onChange: (newValue, oldValue) => {
+        if (typeof handleLogLevelChange === "function") {
+          handleLogLevelChange(newValue, oldValue);
+        }
+      },
     }),
     withCategory({
       id: SETTINGS.language,

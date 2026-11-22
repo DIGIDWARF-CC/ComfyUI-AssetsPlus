@@ -4,6 +4,7 @@ Uses plain asserts (pytest would collect the same ``test_*`` functions). ComfyUI
 """
 from __future__ import annotations
 
+import json
 import os
 import random
 import sys
@@ -542,6 +543,99 @@ def test_delete_and_move_invalidate_the_snapshot() -> None:
     assert mover not in [i["relpath"] for i in after_move["items"]]
     imported = handlers._build_list_response(WORK / "in", "input/", {"limit": "0"})
     assert moved[0]["to"] in [i["relpath"] for i in imported["items"]]
+
+
+def test_log_level_setting_is_coerced_saved_and_applied() -> None:
+    import logging
+
+    from assets_plus import config as config_module
+    from assets_plus import logs
+
+    assert logs.coerce_level("DEBUG ") == "debug" and logs.coerce_level("loud") == "quiet" and logs.coerce_level(None) == "quiet"
+    assert logs.apply_level("silent") == "silent"
+    assert logging.getLogger("assets_plus").level == logging.ERROR
+    assert logging.getLogger("assets_plus.banner").level > logging.CRITICAL, "silent hides the banner too"
+    assert logs.apply_level("quiet") == "quiet"
+    assert logging.getLogger("assets_plus").level == logging.WARNING, "quiet: warnings and errors"
+    assert logging.getLogger("assets_plus.banner").level == logging.INFO, "quiet still shows the banner"
+    assert logs.apply_level("debug") == "debug" and logging.getLogger("assets_plus").level == logging.DEBUG
+
+    class Console(logging.Handler):  # like ComfyUI's console handler: nothing below INFO gets through
+        def __init__(self) -> None:
+            super().__init__(level=logging.INFO)
+            self.lines: list[str] = []
+
+        def emit(self, record: logging.LogRecord) -> None:
+            self.lines.append(record.getMessage())
+
+    console = Console()
+    logging.getLogger().addHandler(console)
+    try:
+        logging.getLogger("assets_plus").debug("every request")
+        assert console.lines == ["every request"], "debug records must reach an INFO console at the debug level"
+        logs.apply_level("info")
+        logging.getLogger("assets_plus").debug("hidden")
+        assert console.lines == ["every request"], "and not at the info level"
+    finally:
+        logging.getLogger().removeHandler(console)
+    logs.apply_level("quiet")
+
+    path = config_module.config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"list_limit": 321, "log_level": "loud"}', encoding="utf-8")
+    config_module._config_cache = None
+    loaded = config_module.load_config()
+    assert loaded.log_level == "quiet" and loaded.list_limit == 321
+
+    config_module.save_config_value("log_level", "info")
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved == {"list_limit": 321, "log_level": "info"}, "other keys must survive"
+    assert config_module.load_config().log_level == "info", "saving must refresh the cached config"
+    path.unlink()
+    config_module._config_cache = None
+
+
+def test_banner_text_and_version_come_from_the_own_pyproject() -> None:
+    from assets_plus import banner
+
+    root = WORK / "installed"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "pyproject.toml").write_text('[project]\nname = "x"\nversion = "2.3.4"\n', encoding="utf-8")
+    assert banner.local_version(root) == "2.3.4" and banner.local_version(WORK / "nowhere") is None
+    assert banner.compose_banner("2.3.4") == "Assets+ v2.3.4 \u00b7 ready"
+    assert "unknown version" in banner.compose_banner(None)
+    assert "\033[" in banner.compose_banner("2.3.4", color=True) and "\033[" not in banner.compose_banner("2.3.4")
+
+
+def test_announce_logs_one_banner_and_silent_hides_it() -> None:
+    import logging
+
+    from assets_plus import banner, logs
+
+    class Capture(logging.Handler):
+        def __init__(self) -> None:
+            super().__init__()
+            self.records: list[logging.LogRecord] = []
+
+        def emit(self, record: logging.LogRecord) -> None:
+            self.records.append(record)
+
+    capture = Capture()
+    banner_logger = logging.getLogger("assets_plus.banner")
+    banner_logger.addHandler(capture)
+    root = WORK / "installed"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "pyproject.toml").write_text('version = "1.1.2"\n', encoding="utf-8")
+    try:
+        logs.apply_level("quiet")
+        text = banner.announce(root)
+        assert "Assets+ v1.1.2" in text and len(capture.records) == 1 and capture.records[0].levelno == logging.INFO
+        logs.apply_level("silent")
+        banner.announce(root)
+        assert len(capture.records) == 1, "silent: no banner"
+    finally:
+        banner_logger.removeHandler(capture)
+        logs.apply_level("quiet")
 
 
 def run() -> int:
