@@ -98,5 +98,11 @@
   "settings.clear_thumbnails": "Assets+ очистить кэш превью",
   "settings.starred_first": "Assets+ показывать избранное первым",
   "settings.confirm_delete_starred": "Assets+ всегда подтверждать удаление избранных изображений",
-  "settings.language": "Assets+ язык"
+  "settings.language": "Assets+ язык",
+  "settings.log_level": "Assets+ уровень логов в консоли",
+  "settings.log_level.silent": "Тихо (только ошибки)",
+  "settings.log_level.quiet": "Спокойно (баннер при старте, предупреждения)",
+  "settings.log_level.info": "Подробно (ещё удаления, переносы, звёзды)",
+  "settings.log_level.debug": "Отладка (каждый запрос)",
+  "log.log_level_failed": "Не удалось синхронизировать уровень логов с сервером."
 }

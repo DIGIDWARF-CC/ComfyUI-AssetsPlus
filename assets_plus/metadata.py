@@ -9,7 +9,6 @@ from typing import Any
 
 from PIL import Image
 
-from .storage import thumb_cache_dir
 from .video_metadata import read_matroska_metadata, read_mp4_metadata
 
 LOGGER = logging.getLogger("assets_plus")
@@ -73,45 +72,3 @@ def has_workflow(path: Path, mtime: int, size: int) -> bool:
 def read_metadata(path: Path) -> dict[str, Any]:
     """Read metadata from an image file."""
     return _read_embedded_metadata(path)
-
-
-def build_thumb_cache_key(relpath: str, mtime: int, size: int, width: int, height: int) -> str:
-    hash_input = f"{relpath}:{mtime}:{size}:{width}:{height}".encode("utf-8")
-    return hashlib.sha256(hash_input).hexdigest()
-
-
-def remove_thumb_cache_entries(
-    relpath: str,
-    mtime: int,
-    size: int,
-    thumbnail_sizes: tuple[tuple[int, int], ...],
-) -> int:
-    removed = 0
-    cache_root = thumb_cache_dir()
-    for width, height in thumbnail_sizes:
-        cache_key = build_thumb_cache_key(relpath, mtime, size, width, height)
-        cache_path = cache_root / f"{cache_key}.png"
-        if not cache_path.exists():
-            continue
-        try:
-            cache_path.unlink()
-            removed += 1
-        except OSError:
-            LOGGER.warning(
-                "[Assets+ Explorer] Failed to remove thumbnail cache %s for %s",
-                cache_path,
-                relpath,
-            )
-    return removed
-
-
-def clear_thumb_cache() -> int:
-    cache_root = thumb_cache_dir()
-    removed = 0
-    for entry in cache_root.glob("*.png"):
-        try:
-            entry.unlink()
-            removed += 1
-        except OSError:
-            LOGGER.warning("[Assets+ Explorer] Failed to remove thumbnail cache %s", entry)
-    return removed

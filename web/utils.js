@@ -3,8 +3,17 @@ import { app as importedApp } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { t } from './i18n.js';
 
-export const log = (...args) => console.log("[Assets+ Explorer]", ...args);
-export const warn = (...args) => console.warn("[Assets+ Explorer]", ...args);
+// The same level as the server's (silent, quiet, info, debug): the browser console stays quiet by default too.
+let consoleLevel = "quiet";
+export const setLogLevel = (level) => {
+  consoleLevel = String(level || "quiet");
+};
+export const log = (...args) => {
+  if (consoleLevel === "info" || consoleLevel === "debug") console.log("[Assets+ Explorer]", ...args);
+};
+export const warn = (...args) => {
+  if (consoleLevel !== "silent") console.warn("[Assets+ Explorer]", ...args);
+};
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 export const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
@@ -98,13 +107,19 @@ export const getSettingValue = (appInstance, id, fallback) => {
   return fallback;
 };
 
-export const buildViewUrl = (relpath, directory) => {
+/** Changes whenever the file changes: keeps a browser from showing an old file that was replaced under its name. */
+export const itemVersion = (item) => (item ? `${item.mtime}-${item.size}` : "");
+
+export const buildViewUrl = (relpath, directory, version = "") => {
   const segments = relpath.split("/");
   const filename = segments.pop() ?? relpath;
   const subfolder = segments.join("/");
   const params = new URLSearchParams({ filename, type: directory });
   if (subfolder) {
     params.set("subfolder", subfolder);
+  }
+  if (version) {
+    params.set("v", String(version));
   }
   return `/view?${params.toString()}`;
 };

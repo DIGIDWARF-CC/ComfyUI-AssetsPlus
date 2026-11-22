@@ -145,6 +145,9 @@
      to ~80 ms. The tile height is fixed (thumb 120px + border), so the scrollbar stays exact. */
   content-visibility: auto;
   contain-intrinsic-block-size: auto 122px;
+  /* Tiles far from the viewport are empty shells (see hydrateCard) and must keep their height. */
+  min-height: 122px;
+  box-sizing: border-box;
 }
 .assets-plus-card.selected {
   border-color: var(--assets-plus-accent);

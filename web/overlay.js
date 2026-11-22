@@ -1,4 +1,4 @@
-import { buildViewUrl, clamp, fetchJson, getFileExtension, warn, log } from './utils.js';
+import { buildViewUrl, itemVersion, clamp, fetchJson, getFileExtension, warn, log } from './utils.js';
 import { OUTPUT_TAB, INPUT_TAB, OVERLAY_COMMANDS } from './constants.js';
 import { t } from './i18n.js';
 
@@ -219,7 +219,7 @@ export const overlayAPI = {
     overlayInfo.textContent = `${item.filename} • ${dateLabel}`;
     this.updateOverlayMeta(item);
 
-    const viewUrl = buildViewUrl(item.relpath, this.state.tab);
+    const viewUrl = buildViewUrl(item.relpath, this.state.tab, itemVersion(item));
 
     // Hide every media element first; the branch below shows just the one it needs.
     this.overlayImageLoadId += 1;
@@ -741,7 +741,7 @@ export const overlayAPI = {
       });
       return;
     }
-    const url = buildViewUrl(item.relpath, this.state.tab);
+    const url = buildViewUrl(item.relpath, this.state.tab, itemVersion(item));
     try {
       const response = await fetch(url);
       if (!response.ok) {
@@ -835,7 +835,7 @@ export const overlayAPI = {
   handlePrintOverlayImage() {
     const item = this.getOverlayItem();
     if (!item || item.type !== "image") return;
-    const url = buildViewUrl(item.relpath, this.state.tab);
+    const url = buildViewUrl(item.relpath, this.state.tab, itemVersion(item));
     const frame = document.createElement("iframe");
     frame.className = "assets-plus-print-frame";
     document.body.appendChild(frame);

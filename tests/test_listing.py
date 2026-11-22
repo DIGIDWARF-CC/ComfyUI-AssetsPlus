@@ -4,6 +4,7 @@ Uses plain asserts (pytest would collect the same ``test_*`` functions). ComfyUI
 """
 from __future__ import annotations
 
+import json
 import os
 import random
 import sys
@@ -263,39 +264,199 @@ def test_marks_are_reconciled_once_per_snapshot_and_index_state() -> None:
         handlers.reconcile_marks = original
 
 
+def make_noise_image(path: Path, size: int = 400, mode: str = "RGB") -> None:
+    from PIL import Image
+
+    channels = {"RGB": 3, "RGBA": 4, "L": 1}[mode]
+    Image.frombytes(mode, (size, size), os.urandom(size * size * channels)).save(path)
+
+
 def test_thumbnails_are_shared_between_simultaneous_requests_and_handle_odd_modes() -> None:
     import asyncio
 
     from PIL import Image
 
+    from assets_plus import thumbcache
+
     folder = WORK / "thumbs"
     folder.mkdir(exist_ok=True)
     source = folder / "cmyk.tif"
     Image.new("CMYK", (600, 400), (10, 20, 30, 40)).save(source)
-    cache_path = folder / "cmyk_thumb.png"
-    cache_path.unlink(missing_ok=True)
+    key = thumbcache.cache_key("output", "cmyk.tif", 1, 2, 128, 128)
 
     calls = []
-    original = handlers._make_thumbnail
+    original = thumbcache.write_thumbnail
 
     def counting(*args):
         calls.append(1)
         time.sleep(0.1)
         return original(*args)
 
-    handlers._make_thumbnail = counting
+    thumbcache.write_thumbnail = counting
 
-    async def burst() -> None:
-        await asyncio.gather(*(handlers._generate_thumbnail(source, 128, 128, cache_path) for _ in range(8)))
+    async def burst() -> list:
+        return await asyncio.gather(*(handlers._generate_thumbnail(source, 128, 128, key) for _ in range(8)))
 
     try:
-        asyncio.run(burst())
+        results = asyncio.run(burst())
     finally:
-        handlers._make_thumbnail = original
+        thumbcache.write_thumbnail = original
     assert len(calls) == 1, f"{len(calls)} conversions for 8 simultaneous requests of one tile"
     assert not handlers._THUMB_INFLIGHT, "finished work must be forgotten"
-    with Image.open(cache_path) as thumb:
-        assert thumb.size[0] <= 128 and thumb.size[1] <= 128 and thumb.mode == "RGB"
+    assert all(path == results[0] for path in results) and thumbcache.lookup(key) == results[0]
+    with Image.open(results[0]) as thumb:
+        assert thumb.format == "WEBP" and thumb.size[0] <= 128 and thumb.size[1] <= 128 and thumb.mode == "RGB"
+
+
+def test_thumbnail_cache_layout_format_and_keys() -> None:
+    from PIL import Image
+
+    from assets_plus import thumbcache
+
+    folder = WORK / "thumbs_layout"
+    folder.mkdir(exist_ok=True)
+    plain = folder / "photo.png"
+    make_noise_image(plain, 500)
+    alpha = folder / "alpha.png"
+    make_noise_image(alpha, 300, "RGBA")
+    tall = folder / "tall.jpg"
+    exif = Image.Exif()
+    exif[0x0112] = 6  # stored rotated: shown turned by 90 degrees
+    Image.frombytes("RGB", (200, 100), os.urandom(200 * 100 * 3)).save(tall, exif=exif)
+
+    key = thumbcache.cache_key("output", "photo.png", 5, 6, 256, 256)
+    path = thumbcache.write_thumbnail(plain, 256, 256, key)
+    assert path == thumbcache.entry_path(key) and path.parent.name == key[:2] and path.suffix == ".webp"
+    assert path.stat().st_size < plain.stat().st_size / 3, "the thumbnail must be much smaller than the noisy source"
+    with Image.open(path) as thumb:
+        assert thumb.size == (256, 256)
+
+    with Image.open(thumbcache.write_thumbnail(alpha, 128, 128, thumbcache.cache_key("output", "alpha.png", 1, 1, 128, 128))) as thumb:
+        assert "A" in thumb.getbands(), "transparency must survive"
+    with Image.open(thumbcache.write_thumbnail(tall, 128, 128, thumbcache.cache_key("input", "tall.jpg", 1, 1, 128, 128))) as thumb:
+        assert thumb.size[1] > thumb.size[0], "EXIF orientation must be applied"
+
+    keys = {
+        thumbcache.cache_key(scope, "a.png", mtime, size, 256, 256)
+        for scope in ("output", "input")
+        for mtime in (1, 2)
+        for size in (10, 11)
+    }
+    assert len(keys) == 8, "gallery, mtime and size must all change the key"
+    assert thumbcache.cache_key("output", "a.png", 1, 1, 256, 256) != thumbcache.cache_key("output", "a.png", 1, 1, 512, 512)
+
+
+def test_thumbnail_cache_evicts_least_recently_used_down_to_the_low_water_mark() -> None:
+    from assets_plus import thumbcache
+
+    thumbcache.clear()
+    folder = WORK / "thumbs_lru"
+    folder.mkdir(exist_ok=True)
+    source = folder / "noise.png"
+    make_noise_image(source, 300)
+    keys = [thumbcache.cache_key("output", f"n{i}.png", i, i, 128, 128) for i in range(40)]
+    for key in keys:
+        thumbcache.write_thumbnail(source, 128, 128, key)
+    entry_size = thumbcache.entry_path(keys[0]).stat().st_size
+    now = time.time()
+    for position, key in enumerate(keys):  # entry 0 is the oldest, entry 39 the newest
+        os.utime(thumbcache.entry_path(key), (now - 1000 + position, now - 1000 + position))
+    # an old entry is used again: lookup must give it a fresh last-use time
+    os.utime(thumbcache.entry_path(keys[0]), (now - 100000, now - 100000))
+    assert thumbcache.lookup(keys[0]) is not None
+    assert time.time() - thumbcache.entry_path(keys[0]).stat().st_mtime < 60
+
+    budget = entry_size * 30
+    original_budget, original_wait = thumbcache.budget_bytes, thumbcache.MIN_PASS_INTERVAL
+    thumbcache.budget_bytes = lambda: budget
+    try:
+        thumbcache._maintenance_pass()
+    finally:
+        thumbcache.budget_bytes = original_budget
+    left = [key for key in keys if thumbcache.entry_path(key).exists()]
+    total = sum(thumbcache.entry_path(key).stat().st_size for key in left)
+    assert total <= budget * thumbcache.LOW_WATER + entry_size, "eviction must reach the low-water mark"
+    assert len(left) < 40 and keys[0] in left, "the entry used last must survive"
+    assert keys[1] not in left and keys[39] in left, "the least recently used entries go first"
+    assert thumbcache._total_bytes == total, "the running size must match the disk after a pass"
+
+
+def test_thumbnail_cache_cleanup_of_old_layout_removal_clear_and_failures() -> None:
+    from assets_plus import thumbcache
+    from assets_plus.storage import thumb_cache_dir
+
+    thumbcache.clear()
+    root = thumb_cache_dir()
+    legacy = root / ("a" * 64 + ".png")
+    legacy.write_bytes(b"old png thumbnail")
+    placeholder = root / "_placeholder_other_256x256.png"
+    placeholder.write_bytes(b"placeholder")
+    stray = root / "notes.txt"
+    stray.write_bytes(b"not ours to delete")
+    thumbcache._legacy_purged = False
+    thumbcache._maintenance_pass()
+    assert not legacy.exists() and placeholder.exists() and stray.exists()
+
+    folder = WORK / "thumbs_cleanup"
+    folder.mkdir(exist_ok=True)
+    source = folder / "noise.png"
+    make_noise_image(source, 200)
+    sizes = ((256, 256), (512, 512))
+    for width, height in sizes:
+        thumbcache.write_thumbnail(source, width, height, thumbcache.cache_key("input", "gone.png", 7, 8, width, height))
+    assert thumbcache.remove_entries("input", "gone.png", 7, 8, sizes) == 2
+    assert thumbcache.remove_entries("input", "gone.png", 7, 8, sizes) == 0
+    other = thumbcache.cache_key("input", "kept.png", 1, 1, 256, 256)
+    thumbcache.write_thumbnail(source, 256, 256, other)
+    legacy.write_bytes(b"old again")
+    assert thumbcache.clear() == 2, "clear removes the new entries and old-layout files, not placeholders"
+    assert thumbcache.lookup(other) is None and not legacy.exists() and placeholder.exists()
+
+    assert not thumbcache.recently_failed("broken")
+    thumbcache.remember_failure("broken")
+    assert thumbcache.recently_failed("broken")
+    thumbcache._failures["broken"] -= thumbcache.FAILURE_MEMORY + 1
+    assert not thumbcache.recently_failed("broken"), "a failure is forgotten after a while"
+
+
+def test_file_replaced_under_the_same_name_gets_a_new_fingerprint_and_thumbnail_key() -> None:
+    out = prepare_handler_gallery()
+    name = "ComfyUI_0015_.png"
+    path = out / name
+    path.write_bytes(b"first version")
+    os.utime(path, (1_790_000_000, 1_790_000_000))
+    first = handlers._build_list_response(out, "", {"limit": "0", "fresh": "1"})
+    old = next(item for item in first["items"] if item["relpath"] == name)
+
+    path.unlink()  # deleted behind our back, generated again under the same name a bit later
+    path.write_bytes(b"second, longer version")
+    os.utime(path, (1_790_000_030, 1_790_000_030))
+    second = handlers._build_list_response(out, "", {"limit": "0", "fresh": "1"})
+    new = next(item for item in second["items"] if item["relpath"] == name)
+    assert (new["mtime"], new["size"]) != (old["mtime"], old["size"])
+    assert sum(1 for item in second["items"] if item["relpath"] == name) == 1
+
+    from assets_plus import thumbcache
+
+    keys = {thumbcache.cache_key("output", name, item["mtime"], item["size"], 256, 256) for item in (old, new)}
+    assert len(keys) == 2, "the thumbnail cache must not serve the old file's thumbnail for the new one"
+
+    # a star belongs to the old file: a file generated again under the name does not inherit it
+    path.write_bytes(b"third version, with a star")
+    os.utime(path, (1_790_000_060, 1_790_000_060))
+    handlers._build_list_response(out, "", {"limit": "0", "fresh": "1"})
+    handlers.set_starred_assets(out, "output", [name], True)
+    starred = handlers._build_list_response(out, "", {"limit": "0", "fresh": "1"})
+    assert next(item for item in starred["items"] if item["relpath"] == name)["starred"]
+    path.unlink()
+    path.write_bytes(b"fourth version, regenerated")
+    os.utime(path, (1_790_000_090, 1_790_000_090))
+    regenerated = handlers._build_list_response(out, "", {"limit": "0", "fresh": "1"})
+    assert not next(item for item in regenerated["items"] if item["relpath"] == name)["starred"]
+
+    # the incremental "since" poll reports the replacement too
+    since = handlers._build_list_response(out, "", {"limit": "0", "since": str(old["mtime"])})
+    assert name in [item["relpath"] for item in since["items"]]
 
 
 def test_fine_timestamps_use_the_short_racy_window() -> None:
@@ -382,6 +543,99 @@ def test_delete_and_move_invalidate_the_snapshot() -> None:
     assert mover not in [i["relpath"] for i in after_move["items"]]
     imported = handlers._build_list_response(WORK / "in", "input/", {"limit": "0"})
     assert moved[0]["to"] in [i["relpath"] for i in imported["items"]]
+
+
+def test_log_level_setting_is_coerced_saved_and_applied() -> None:
+    import logging
+
+    from assets_plus import config as config_module
+    from assets_plus import logs
+
+    assert logs.coerce_level("DEBUG ") == "debug" and logs.coerce_level("loud") == "quiet" and logs.coerce_level(None) == "quiet"
+    assert logs.apply_level("silent") == "silent"
+    assert logging.getLogger("assets_plus").level == logging.ERROR
+    assert logging.getLogger("assets_plus.banner").level > logging.CRITICAL, "silent hides the banner too"
+    assert logs.apply_level("quiet") == "quiet"
+    assert logging.getLogger("assets_plus").level == logging.WARNING, "quiet: warnings and errors"
+    assert logging.getLogger("assets_plus.banner").level == logging.INFO, "quiet still shows the banner"
+    assert logs.apply_level("debug") == "debug" and logging.getLogger("assets_plus").level == logging.DEBUG
+
+    class Console(logging.Handler):  # like ComfyUI's console handler: nothing below INFO gets through
+        def __init__(self) -> None:
+            super().__init__(level=logging.INFO)
+            self.lines: list[str] = []
+
+        def emit(self, record: logging.LogRecord) -> None:
+            self.lines.append(record.getMessage())
+
+    console = Console()
+    logging.getLogger().addHandler(console)
+    try:
+        logging.getLogger("assets_plus").debug("every request")
+        assert console.lines == ["every request"], "debug records must reach an INFO console at the debug level"
+        logs.apply_level("info")
+        logging.getLogger("assets_plus").debug("hidden")
+        assert console.lines == ["every request"], "and not at the info level"
+    finally:
+        logging.getLogger().removeHandler(console)
+    logs.apply_level("quiet")
+
+    path = config_module.config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"list_limit": 321, "log_level": "loud"}', encoding="utf-8")
+    config_module._config_cache = None
+    loaded = config_module.load_config()
+    assert loaded.log_level == "quiet" and loaded.list_limit == 321
+
+    config_module.save_config_value("log_level", "info")
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved == {"list_limit": 321, "log_level": "info"}, "other keys must survive"
+    assert config_module.load_config().log_level == "info", "saving must refresh the cached config"
+    path.unlink()
+    config_module._config_cache = None
+
+
+def test_banner_text_and_version_come_from_the_own_pyproject() -> None:
+    from assets_plus import banner
+
+    root = WORK / "installed"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "pyproject.toml").write_text('[project]\nname = "x"\nversion = "2.3.4"\n', encoding="utf-8")
+    assert banner.local_version(root) == "2.3.4" and banner.local_version(WORK / "nowhere") is None
+    assert banner.compose_banner("2.3.4") == "Assets+ v2.3.4 \u00b7 ready"
+    assert "unknown version" in banner.compose_banner(None)
+    assert "\033[" in banner.compose_banner("2.3.4", color=True) and "\033[" not in banner.compose_banner("2.3.4")
+
+
+def test_announce_logs_one_banner_and_silent_hides_it() -> None:
+    import logging
+
+    from assets_plus import banner, logs
+
+    class Capture(logging.Handler):
+        def __init__(self) -> None:
+            super().__init__()
+            self.records: list[logging.LogRecord] = []
+
+        def emit(self, record: logging.LogRecord) -> None:
+            self.records.append(record)
+
+    capture = Capture()
+    banner_logger = logging.getLogger("assets_plus.banner")
+    banner_logger.addHandler(capture)
+    root = WORK / "installed"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "pyproject.toml").write_text('version = "1.1.2"\n', encoding="utf-8")
+    try:
+        logs.apply_level("quiet")
+        text = banner.announce(root)
+        assert "Assets+ v1.1.2" in text and len(capture.records) == 1 and capture.records[0].levelno == logging.INFO
+        logs.apply_level("silent")
+        banner.announce(root)
+        assert len(capture.records) == 1, "silent: no banner"
+    finally:
+        banner_logger.removeHandler(capture)
+        logs.apply_level("quiet")
 
 
 def run() -> int:

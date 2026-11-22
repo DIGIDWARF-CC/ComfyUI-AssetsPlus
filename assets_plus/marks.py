@@ -8,9 +8,9 @@ actually on disk:
 * an entry whose file vanished is dropped (orphan);
 * an orphan whose fingerprint matches exactly one new, unmarked file is treated
   as a move/rename and follows the file;
-* an entry whose file changed in place is dropped for *strict* indexes (hidden:
-  a replaced file must not stay hidden) and re-fingerprinted for lenient ones
-  (starred: editing an image must not silently lose its star).
+* an entry whose file changed in place is dropped for *strict* indexes (hidden and
+  starred: a replaced or regenerated file is another file and carries no mark) and
+  re-fingerprinted for lenient ones (no index uses that mode at the moment).
 """
 from __future__ import annotations
 

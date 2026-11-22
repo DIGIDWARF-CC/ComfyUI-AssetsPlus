@@ -98,5 +98,11 @@
   "settings.clear_thumbnails": "Assets+ clear thumbnail cache",
   "settings.starred_first": "Assets+ show starred first",
   "settings.confirm_delete_starred": "Assets+ always confirm deleting starred images",
-  "settings.language": "Assets+ language"
+  "settings.language": "Assets+ language",
+  "settings.log_level": "Assets+ console log level",
+  "settings.log_level.silent": "Silent (errors only)",
+  "settings.log_level.quiet": "Quiet (start-up banner, warnings)",
+  "settings.log_level.info": "Info (also deletes, moves, stars)",
+  "settings.log_level.debug": "Debug (every request)",
+  "log.log_level_failed": "Could not sync the log level with the server."
 }

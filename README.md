@@ -44,6 +44,8 @@ Available options:
 - `recursive`: recursive scan of the output directory (`true/false`).
 - `default_delete_mode`: `"trash" | "delete" | "hide"`.
 - `scan_depth`: depth limit for recursive scanning (`null` = no limit).
+- `thumbnail_cache_mb`: size budget of the thumbnail cache in MB (default `500`, minimum `32`); the least recently used thumbnails are removed when it is exceeded.
+- `log_level`: how much Assets+ writes to the console, `"silent" | "quiet" | "info" | "debug"` (default `"quiet"`, also a setting, see below).
 
 UI settings (ComfyUI Settings → Assets+ Explorer):
 - **Assets+ page size** — number of items fetched per page.
@@ -54,6 +56,7 @@ UI settings (ComfyUI Settings → Assets+ Explorer):
 - **Assets+ keep overlay open when opening/replacing workflow** — keep the lens overlay open after workflow actions.
 - **Assets+ thumbnail quality** — pick low (256px) or high (512px) previews.
 - **Assets+ clear thumbnail cache** — action button to remove cached previews on disk.
+- **Assets+ console log level** — Silent (errors only), Quiet (default: start-up banner, warnings), Info (also deletes, moves, stars, cache housekeeping), Debug (every request). It is stored in `config.json` on the server.
 
 Example:
 ```json
@@ -82,13 +85,25 @@ Example:
 * Assets+ shortcuts tab in the ComfyUI Shortcuts panel for overlay navigation actions.
 * Move generated results into the Imported tab (the ComfyUI input folder) with the `E` hotkey in the lens, the button in the lens, or in selection mode for many files at once. They stop being results and become assets for your generations, which also keeps them out of the way of mass clean-ups of the output folder. Files land in the root of the input folder (so Load Image can see them); name clashes get a `_1`, `_2`... suffix and nothing is overwritten. Stars move along with the file.
 * Selection mode (toggle in the header): tiles lose the workflow menu and drag-and-drop, and the star becomes a read-only indicator, and a click selects a tile (green overlay with a check mark) instead of opening the lens. Shift+click selects (or deselects) the whole range from the previously clicked tile. Select all / invert selection live there too. With something selected, the header offers delete (the usual silent-delete and "always confirm starred" rules apply), star/unstar (toggles: removes the stars when all selected are already starred), move to Imported (Generated tab only) and download.
-* Star your favorites with the star button on a tile or in the lens, or with the `Q` hotkey in the lens. Stars are kept next to the hide list, so your files are never modified, and they follow files that are renamed or moved by hand.
+* Star your favorites with the star button on a tile or in the lens, or with the `Q` hotkey in the lens. Stars are kept next to the hide list, so your files are never modified, and they follow files that are renamed or moved by hand. A file that is replaced (deleted and generated again under the same name, or overwritten) is another file: it does not inherit the star.
 * Sticky header with icon-based actions (search toggle, selection mode, select all, invert selection, star/move/download/delete of the selection) while only the gallery area scrolls.
 * Server-side search optimized for large galleries.
 * Lazy loading of thumbnails and paged scrolling for large galleries.
 * Built for big folders: the server keeps a snapshot of the folder tree (revalidated by directory timestamps, rescanned when anything changes) and serves pages lazily from it, workflow detection only runs for the files on the page, and thumbnails are cached by the browser. The lens can jump to the oldest file or step past the loaded part of the gallery without loading everything in between. The refresh button forces a fresh scan.
 * Event-driven updates when ComfyUI emits execution or upload events (no polling).
 * Expanded media support from @svilendotorg: additional image/video formats, audio playback in the overlay, GLB/GLTF mesh previews, and arrow-key overlay navigation.
+
+## Console output
+
+Assets+ is quiet by default. At start-up it prints one line with the installed version and then only warnings and
+errors:
+
+```
+Assets+ v1.1.2 · ready
+```
+
+It makes no network requests and reads nothing but its own `pyproject.toml` for that line; whether a newer version
+exists is for ComfyUI-Manager to tell you.
 
 ## Deletion modes
 
@@ -142,7 +157,7 @@ The extension structure matches Manager requirements:
 
 * Trash support lives in `assets_plus/trash.py` (`send2trash` first, native implementation otherwise).
 * Hidden assets are stored in `user/__assets_plus/hidden.json` (input entries are namespaced).
-* Thumbnail cache: `user/__assets_plus/thumb_cache/`.
+* Thumbnail cache: `user/__assets_plus/thumb_cache/v2/`. Thumbnails are small lossy WebP files (about a tenth of the size of the PNGs older versions wrote) spread over 256 folders and evicted least-recently-used first. Files of the older flat PNG layout are deleted once, in the background.
 * The thumbnail cache can be cleared from settings or via `POST /assets_plus/thumb/clear`.
 
 ## Third-party assets

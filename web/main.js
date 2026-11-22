@@ -1,6 +1,6 @@
 import { EXTENSION_NAME, SIDEBAR_TAB_ID, OVERLAY_COMMANDS, OVERLAY_KEYBINDINGS,
-         SETTINGS, DEFAULT_LANGUAGE, ASSETS_PLUS_SHORTCUTS_CATEGORY } from './constants.js';
-import { log, warn, waitForApp, fetchJson, getSettingValue, createStyleTag } from './utils.js';
+         SETTINGS, DEFAULT_LANGUAGE, DEFAULT_LOG_LEVEL, ASSETS_PLUS_SHORTCUTS_CATEGORY } from './constants.js';
+import { log, warn, waitForApp, fetchJson, getSettingValue, createStyleTag, setLogLevel } from './utils.js';
 import { t, loadTranslationsList, loadTranslationData, buildLanguageOptions, applyLanguage,
          setOnLanguageChange, activeLanguage } from './i18n.js';
 import { buildSettingsSchema } from './settings.js';
@@ -113,6 +113,37 @@ const boot = async () => {
     }
   };
 
+  // The server keeps the log level (it needs it before any page exists). The setting edits it; at start the
+  // setting follows the server, without writing the same value back.
+  let syncingLogLevel = false;
+  setLogLevel(getSettingValue(appInstance, SETTINGS.logLevel, DEFAULT_LOG_LEVEL));
+  const handleLogLevelChange = (newValue) => {
+    setLogLevel(newValue);
+    if (syncingLogLevel) return;
+    fetchJson("/assets_plus/log_level", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ level: newValue }),
+    }).catch((error) => warn(t("log.log_level_failed"), error));
+  };
+  const followServerLogLevel = async (app) => {
+    try {
+      const config = await fetchJson("/assets_plus/config");
+      const current = getSettingValue(app, SETTINGS.logLevel, DEFAULT_LOG_LEVEL);
+      setLogLevel(config.log_level || current);
+      if (config.log_level && config.log_level !== current) {
+        syncingLogLevel = true;
+        try {
+          await app.extensionManager?.setting?.set?.(SETTINGS.logLevel, config.log_level);
+        } finally {
+          syncingLogLevel = false;
+        }
+      }
+    } catch (error) {
+      warn(t("log.log_level_failed"), error);
+    }
+  };
+
   appInstance.registerExtension({
     name: EXTENSION_NAME,
     commands: buildOverlayCommands(),
@@ -126,9 +157,10 @@ const boot = async () => {
       });
     }, handleClearThumbnails, () => {
       explorerInstance?.refreshList?.();
-    }),
+    }, handleLogLevelChange),
     setup(app) {
       registerSidebarTab(app);
+      followServerLogLevel(app);
     },
   });
 };
