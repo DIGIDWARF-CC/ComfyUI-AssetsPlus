@@ -263,6 +263,41 @@ def test_marks_are_reconciled_once_per_snapshot_and_index_state() -> None:
         handlers.reconcile_marks = original
 
 
+def test_thumbnails_are_shared_between_simultaneous_requests_and_handle_odd_modes() -> None:
+    import asyncio
+
+    from PIL import Image
+
+    folder = WORK / "thumbs"
+    folder.mkdir(exist_ok=True)
+    source = folder / "cmyk.tif"
+    Image.new("CMYK", (600, 400), (10, 20, 30, 40)).save(source)
+    cache_path = folder / "cmyk_thumb.png"
+    cache_path.unlink(missing_ok=True)
+
+    calls = []
+    original = handlers._make_thumbnail
+
+    def counting(*args):
+        calls.append(1)
+        time.sleep(0.1)
+        return original(*args)
+
+    handlers._make_thumbnail = counting
+
+    async def burst() -> None:
+        await asyncio.gather(*(handlers._generate_thumbnail(source, 128, 128, cache_path) for _ in range(8)))
+
+    try:
+        asyncio.run(burst())
+    finally:
+        handlers._make_thumbnail = original
+    assert len(calls) == 1, f"{len(calls)} conversions for 8 simultaneous requests of one tile"
+    assert not handlers._THUMB_INFLIGHT, "finished work must be forgotten"
+    with Image.open(cache_path) as thumb:
+        assert thumb.size[0] <= 128 and thumb.size[1] <= 128 and thumb.mode == "RGB"
+
+
 def test_fine_timestamps_use_the_short_racy_window() -> None:
     assert listing._racy_window(1_790_000_000_123_456_789) == listing.RACY_WINDOW_FINE
     assert listing._racy_window(1_790_000_000_000_000_000) == listing.RACY_WINDOW

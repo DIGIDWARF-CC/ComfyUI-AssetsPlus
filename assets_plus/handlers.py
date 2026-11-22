@@ -6,6 +6,7 @@ import logging
 import os
 import shutil
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -60,21 +61,45 @@ def _set_content_type(response: web.StreamResponse, path: Path) -> None:
     response.headers["Content-Type"] = content_type
 
 
+# Thumbnails get their own small pool: a burst of tiles scrolling into view must not occupy the threads that
+# list, window and delete requests run on, and each decode can need a lot of memory for a large image.
+_THUMB_POOL = ThreadPoolExecutor(max_workers=3, thread_name_prefix="assets-plus-thumb")
+_THUMB_INFLIGHT: dict[Path, asyncio.Future] = {}
+_PNG_MODES = {"1", "L", "LA", "P", "RGB", "RGBA"}
+
+
+def _make_thumbnail(path: Path, width: int, height: int, cache_path: Path) -> None:
+    # Write to a temp file and publish it atomically: a failed or concurrent save must
+    # never leave a truncated PNG at cache_path (it would be served forever).
+    tmp_path = cache_path.with_name(f".{cache_path.name}.{threading.get_ident()}.tmp")
+    try:
+        with Image.open(path) as image:
+            image.draft("RGB", (width * 2, height * 2))  # JPEG: decode at a reduced scale, much cheaper
+            image.thumbnail((width, height))
+            if image.mode not in _PNG_MODES:  # CMYK, 16-bit and float modes cannot be saved as PNG as they are
+                image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+            image.save(tmp_path, format="PNG")
+        os.replace(tmp_path, cache_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    evict_thumb_cache()
+
+
 async def _generate_thumbnail(path: Path, width: int, height: int, cache_path: Path) -> None:
-    """Generate thumbnail in thread pool with timeout."""
-    def _sync_thumb() -> None:
-        # Write to a temp file and publish it atomically: a failed or concurrent save must
-        # never leave a truncated PNG at cache_path (it would be served forever).
-        tmp_path = cache_path.with_name(f".{cache_path.name}.{threading.get_ident()}.tmp")
-        try:
-            with Image.open(path) as image:
-                image.thumbnail((width, height))
-                image.save(tmp_path, format="PNG")
-            os.replace(tmp_path, cache_path)
-        finally:
-            tmp_path.unlink(missing_ok=True)
-        evict_thumb_cache()
-    await asyncio.wait_for(asyncio.to_thread(_sync_thumb), timeout=30.0)
+    """Generate a thumbnail in the thumbnail pool; simultaneous requests for one tile share the work."""
+    future = _THUMB_INFLIGHT.get(cache_path)
+    if future is None:
+        future = asyncio.get_running_loop().run_in_executor(_THUMB_POOL, _make_thumbnail, path, width, height, cache_path)
+        _THUMB_INFLIGHT[cache_path] = future
+
+        def done(finished: asyncio.Future) -> None:
+            _THUMB_INFLIGHT.pop(cache_path, None)
+            if not finished.cancelled():
+                finished.exception()  # mark retrieved even if every waiter went away
+
+        future.add_done_callback(done)
+    # shield: one client giving up (or the timeout) must not cancel the work the others wait for
+    await asyncio.wait_for(asyncio.shield(future), timeout=30.0)
 
 
 def _int_param(params: Any, name: str, default: int, minimum: int = 1, maximum: int | None = None) -> int:
