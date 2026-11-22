@@ -317,6 +317,47 @@
   height: 100%;
   object-fit: cover;
 }
+.assets-plus-thumb img.pending {
+  opacity: 0; /* hides the alt text and the broken-image icon, stays laid out so lazy loading still fires */
+}
+.assets-plus-thumb.loading {
+  position: relative;
+}
+.assets-plus-thumb.loading::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  margin: -5px 0 0 -5px;
+  border-radius: 50%;
+  background: var(--fg-color, #e5e7eb);
+  opacity: 0.25;
+  pointer-events: none;
+  animation: assets-plus-pulse 1.5s ease-in-out infinite;
+}
+.assets-plus-view-list .assets-plus-thumb.loading::after {
+  width: 7px;
+  height: 7px;
+  margin: -3.5px 0 0 -3.5px;
+}
+@keyframes assets-plus-pulse {
+  0%,
+  100% {
+    opacity: 0.1;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 0.38;
+    transform: scale(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .assets-plus-thumb.loading::after {
+    animation: none;
+  }
+}
 .assets-plus-actions {
   display: flex;
   flex-wrap: wrap;

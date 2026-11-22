@@ -1813,6 +1813,14 @@ export class AssetsPlusExplorer {
       image.loading = "lazy";
       image.decoding = "async";
       image.draggable = false;
+      // Until the picture arrives: a dim pulsing dot (CSS) instead of the browser's broken-image icon and alt text.
+      thumb.classList.add("loading");
+      image.classList.add("pending");
+      image.addEventListener("load", () => {
+        image.classList.remove("pending");
+        thumb.classList.remove("loading");
+      });
+      image.addEventListener("error", () => thumb.classList.remove("loading")); // stays invisible, no broken icon
       this.observeMedia(image, thumbUrl);
       thumb.appendChild(image);
     }
