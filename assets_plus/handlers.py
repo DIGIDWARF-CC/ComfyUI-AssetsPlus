@@ -66,25 +66,100 @@ def _set_content_type(response: web.StreamResponse, path: Path) -> None:
 
 # Thumbnails get their own small pool: a burst of tiles scrolling into view must not occupy the threads that
 # list, window and delete requests run on, and each decode can need a lot of memory for a large image.
-_THUMB_POOL = ThreadPoolExecutor(max_workers=3, thread_name_prefix="assets-plus-thumb")
-_THUMB_INFLIGHT: dict[str, asyncio.Future] = {}
+_THUMB_CONCURRENCY = 3
+_THUMB_RUN_TIMEOUT = 30.0
+_THUMB_POOL = ThreadPoolExecutor(max_workers=_THUMB_CONCURRENCY, thread_name_prefix="assets-plus-thumb")
 
 
-async def _generate_thumbnail(path: Path, width: int, height: int, key: str) -> Path:
+class ThumbnailDropped(Exception):
+    """A queued thumbnail was not rendered because every client that asked for it has gone away."""
+
+
+class _ThumbJob:
+    __slots__ = ("key", "path", "width", "height", "future", "requests")
+
+    def __init__(self, key: str, path: Path, width: int, height: int, future: asyncio.Future) -> None:
+        self.key = key
+        self.path = path
+        self.width = width
+        self.height = height
+        self.future = future
+        self.requests: list[web.Request] = []
+
+
+# Jobs that wait for a free worker, newest last. The newest request is the tile the user is looking at, so it runs
+# first (a stack); a job whose clients have all disconnected (the user scrolled past it) is dropped, not rendered.
+_THUMB_PENDING: list[_ThumbJob] = []
+_THUMB_INFLIGHT: dict[str, _ThumbJob] = {}
+_THUMB_TASKS: set[asyncio.Task] = set()
+_thumb_active = 0
+
+
+def _client_gone(request: web.Request) -> bool:
+    transport = request.transport
+    return transport is None or transport.is_closing()
+
+
+def _finish_thumb_future(future: asyncio.Future) -> None:
+    if not future.cancelled():
+        future.exception()  # mark retrieved even if every waiter went away
+
+
+def _pump_thumbnails() -> None:
+    """Start waiting jobs while workers are free, newest first, skipping the ones nobody waits for any more."""
+    global _thumb_active
+    loop = asyncio.get_running_loop()
+    while _thumb_active < _THUMB_CONCURRENCY and _THUMB_PENDING:
+        job = _THUMB_PENDING.pop()
+        if all(_client_gone(request) for request in job.requests):
+            _THUMB_INFLIGHT.pop(job.key, None)
+            job.future.set_exception(ThumbnailDropped())
+            continue
+        _thumb_active += 1
+        task = loop.create_task(_run_thumbnail_job(job))
+        _THUMB_TASKS.add(task)
+        task.add_done_callback(_THUMB_TASKS.discard)
+
+
+async def _run_thumbnail_job(job: _ThumbJob) -> None:
+    global _thumb_active
+    try:
+        work = asyncio.get_running_loop().run_in_executor(
+            _THUMB_POOL, thumbcache.write_thumbnail, job.path, job.width, job.height, job.key
+        )
+        # The time limit counts from the start of the work, not from the moment the tile was requested.
+        result = await asyncio.wait_for(work, timeout=_THUMB_RUN_TIMEOUT)
+        job.future.set_result(result)
+    except BaseException as error:  # includes cancellation at shutdown: waiters must not hang
+        if not job.future.done():
+            job.future.set_exception(error if isinstance(error, Exception) else ThumbnailDropped())
+        if not isinstance(error, Exception):
+            raise
+    finally:
+        _THUMB_INFLIGHT.pop(job.key, None)
+        _thumb_active -= 1
+        _pump_thumbnails()
+
+
+async def _generate_thumbnail(request: web.Request, path: Path, width: int, height: int, key: str) -> Path:
     """Render a thumbnail into the cache in the thumbnail pool; simultaneous requests for one tile share the work."""
-    future = _THUMB_INFLIGHT.get(key)
-    if future is None:
-        future = asyncio.get_running_loop().run_in_executor(_THUMB_POOL, thumbcache.write_thumbnail, path, width, height, key)
-        _THUMB_INFLIGHT[key] = future
-
-        def done(finished: asyncio.Future) -> None:
-            _THUMB_INFLIGHT.pop(key, None)
-            if not finished.cancelled():
-                finished.exception()  # mark retrieved even if every waiter went away
-
-        future.add_done_callback(done)
-    # shield: one client giving up (or the timeout) must not cancel the work the others wait for
-    return await asyncio.wait_for(asyncio.shield(future), timeout=30.0)
+    job = _THUMB_INFLIGHT.get(key)
+    if job is None:
+        job = _ThumbJob(key, path, width, height, asyncio.get_running_loop().create_future())
+        job.future.add_done_callback(_finish_thumb_future)
+        _THUMB_INFLIGHT[key] = job
+        _THUMB_PENDING.append(job)
+    elif job in _THUMB_PENDING:
+        _THUMB_PENDING.remove(job)  # asked for again: it is the newest request now
+        _THUMB_PENDING.append(job)
+    job.requests.append(request)
+    _pump_thumbnails()
+    # shield: one client giving up must not cancel the work the others wait for
+    try:
+        return await asyncio.shield(job.future)
+    finally:
+        if job.future.done() and request in job.requests:
+            job.requests.remove(request)
 
 
 def _int_param(params: Any, name: str, default: int, minimum: int = 1, maximum: int | None = None) -> int:
@@ -128,6 +203,8 @@ async def _thumb_response(request: web.Request, base_dir: Path, scope: str) -> w
         _set_content_type(resp, file_path)
         if immutable and cacheable:
             resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        elif not cacheable:
+            resp.headers["Cache-Control"] = "no-store"  # a stand-in must never stick under the real tile's URL
         return resp
 
     if path.suffix.lower() in {".mp4", ".webm"}:
@@ -160,8 +237,13 @@ async def _thumb_response(request: web.Request, base_dir: Path, scope: str) -> w
         return placeholder_response("other", cacheable=False)
 
     try:
-        cached = await _generate_thumbnail(path, width, height, key)
-    except Exception as error:  # unreadable/huge/odd-mode image or timeout: show a placeholder tile
+        cached = await _generate_thumbnail(request, path, width, height, key)
+    except ThumbnailDropped:  # queued for a client that had already left; nobody needs the answer
+        return placeholder_response("other", cacheable=False)
+    except asyncio.TimeoutError:  # too slow, not broken: the next request may well succeed
+        LOGGER.info("[Assets+ Explorer] Thumbnail timed out for %s", relpath)
+        return placeholder_response("other", cacheable=False)
+    except Exception as error:  # unreadable/huge/odd-mode image: show a placeholder tile
         thumbcache.remember_failure(key)
         LOGGER.info("[Assets+ Explorer] Thumbnail failed for %s: %s", relpath, error)
         LOGGER.debug("Thumbnail failure details", exc_info=True)

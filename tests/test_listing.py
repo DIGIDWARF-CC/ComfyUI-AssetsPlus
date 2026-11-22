@@ -294,8 +294,19 @@ def test_thumbnails_are_shared_between_simultaneous_requests_and_handle_odd_mode
 
     thumbcache.write_thumbnail = counting
 
+    class FakeTransport:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def is_closing(self) -> bool:
+            return self.closed
+
+    class FakeRequest:
+        def __init__(self) -> None:
+            self.transport = FakeTransport()
+
     async def burst() -> list:
-        return await asyncio.gather(*(handlers._generate_thumbnail(source, 128, 128, key) for _ in range(8)))
+        return await asyncio.gather(*(handlers._generate_thumbnail(FakeRequest(), source, 128, 128, key) for _ in range(8)))
 
     try:
         results = asyncio.run(burst())
@@ -306,6 +317,70 @@ def test_thumbnails_are_shared_between_simultaneous_requests_and_handle_odd_mode
     assert all(path == results[0] for path in results) and thumbcache.lookup(key) == results[0]
     with Image.open(results[0]) as thumb:
         assert thumb.format == "WEBP" and thumb.size[0] <= 128 and thumb.size[1] <= 128 and thumb.mode == "RGB"
+
+
+def test_thumbnail_queue_runs_newest_first_and_drops_abandoned_tiles() -> None:
+    import asyncio
+    import threading
+
+    from PIL import Image
+
+    from assets_plus import thumbcache
+
+    folder = WORK / "thumbs_queue"
+    folder.mkdir(exist_ok=True)
+    sources = []
+    for index in range(8):
+        source = folder / f"tile{index}.png"
+        Image.new("RGB", (64, 64), (index * 20, 0, 0)).save(source)
+        sources.append(source)
+
+    started: list[str] = []
+    gate = threading.Event()
+    original = thumbcache.write_thumbnail
+
+    def slow(path, *args):
+        started.append(path.name)
+        gate.wait(5)
+        return original(path, *args)
+
+    class FakeTransport:
+        closing = False
+
+        def is_closing(self) -> bool:
+            return self.closing
+
+    class FakeRequest:
+        def __init__(self) -> None:
+            self.transport = FakeTransport()
+
+    async def scenario() -> tuple[list, list]:
+        requests = [FakeRequest() for _ in sources]
+        keys = [thumbcache.cache_key("output", f"queue{index}", 1, 2, 32, 32) for index in range(len(sources))]
+        tasks = [
+            asyncio.ensure_future(handlers._generate_thumbnail(request, source, 32, 32, key))
+            for request, source, key in zip(requests, sources, keys)
+        ]
+        await asyncio.sleep(0.2)  # the first three occupy the workers, the other five wait
+        requests[7].transport.closing = True  # the newest tile: its client already left
+        requests[5].transport.closing = True
+        gate.set()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        return results, keys
+
+    thumbcache.write_thumbnail = slow
+    try:
+        results, _keys = asyncio.run(scenario())
+    finally:
+        thumbcache.write_thumbnail = original
+    assert started[:3] == ["tile0.png", "tile1.png", "tile2.png"], started
+    # Waiting tiles run newest first; the two whose clients left are never rendered.
+    assert started[3:] == ["tile6.png", "tile4.png", "tile3.png"], started
+    for index in (5, 7):
+        assert isinstance(results[index], handlers.ThumbnailDropped), results[index]
+    for index in (0, 1, 2, 3, 4, 6):
+        assert not isinstance(results[index], BaseException), results[index]
+    assert not handlers._THUMB_INFLIGHT and not handlers._THUMB_PENDING
 
 
 def test_thumbnail_cache_layout_format_and_keys() -> None:
