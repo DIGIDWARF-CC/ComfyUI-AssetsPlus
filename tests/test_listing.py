@@ -199,6 +199,49 @@ def test_racy_expired_fresh_and_invalidated_snapshots_are_rescanned() -> None:
         listing.MAX_AGE = old_max_age
 
 
+def test_concurrent_requests_share_one_scan_even_when_racy() -> None:
+    import threading
+
+    root = WORK / "gallery_burst"
+    make_gallery(root, 40, 13)
+    listing.invalidate(root)
+    (root / "just_now.png").write_bytes(b"1")  # racy: a snapshot of this tree is never reused by later requests
+    scans = []
+    original = listing.scan_tree
+
+    def slow_scan(*args, **kwargs):
+        scans.append(1)
+        time.sleep(0.15)  # long enough for every worker to queue up behind the first scan
+        return original(*args, **kwargs)
+
+    listing.scan_tree = slow_scan
+    results = []
+    try:
+        threads = [
+            threading.Thread(target=lambda: results.append(listing.get_snapshot(root, EXTENSIONS, True, None)))
+            for _ in range(6)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    finally:
+        listing.scan_tree = original
+    assert len(results) == 6 and results[0].racy
+    assert len(scans) <= 2, f"{len(scans)} scans for 6 simultaneous requests (expected the first one, shared)"
+    assert all(snap is results[-1] or snap is results[0] for snap in results)
+
+    # a request that arrives after the shared scan finished does not reuse a racy snapshot
+    last = results[-1]
+    again = listing.get_snapshot(root, EXTENSIONS, True, None)
+    assert not last.racy or again is not last
+
+
+def test_fine_timestamps_use_the_short_racy_window() -> None:
+    assert listing._racy_window(1_790_000_000_123_456_789) == listing.RACY_WINDOW_FINE
+    assert listing._racy_window(1_790_000_000_000_000_000) == listing.RACY_WINDOW
+
+
 def test_workflow_detection_only_runs_for_the_returned_page() -> None:
     root = WORK / "gallery_wf"
     make_gallery(root, 150, 11)

@@ -35,7 +35,8 @@ R_REL, R_NAME, R_MTIME, R_SIZE, R_KIND = range(5)
 Row = tuple  # (relpath, filename, mtime, size, kind)
 
 MAX_AGE = 60.0
-RACY_WINDOW = 2.0
+RACY_WINDOW = 2.0  # coarse (whole second) timestamps
+RACY_WINDOW_FINE = 0.25  # timestamps with sub-second precision
 MAX_SNAPSHOTS = 6
 
 _workflow_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="assets-plus-meta")
@@ -49,6 +50,7 @@ class Snapshot:
     dir_stamps: tuple[tuple[str, int], ...]
     created: float
     racy: bool
+    started: float = 0.0  # time.perf_counter() when the scan began
 
     @cached_property
     def scanned(self) -> dict[str, tuple[int, int]]:
@@ -103,6 +105,16 @@ def scan_tree(
     return rows, stamps
 
 
+def _racy_window(stamp_ns: int) -> float:
+    """How long after a directory changed its timestamp cannot be trusted to show a further change.
+
+    A timestamp with a sub-second part comes from a file system with a fine clock (NTFS, ext4, APFS): a change
+    within one clock tick (a few ms, up to ~16 ms on Windows) can share it. Whole seconds mean a coarse one (FAT,
+    some network shares) where the tick is up to 2 s.
+    """
+    return RACY_WINDOW_FINE if stamp_ns % 1_000_000_000 else RACY_WINDOW
+
+
 def _is_current(snapshot: Snapshot) -> bool:
     if snapshot.racy or time.monotonic() - snapshot.created >= MAX_AGE:
         return False
@@ -124,15 +136,22 @@ def get_snapshot(
     fresh: bool = False,
 ) -> Snapshot:
     key = (str(base_dir), tuple(ext.lower() for ext in extensions), bool(recursive), scan_depth)
+    arrived = time.perf_counter()  # not time.monotonic(): its tick on Windows is ~15 ms
     with _lock:
         snapshot = _cache.get(key)
-        if snapshot is not None and not fresh and _is_current(snapshot):
-            _cache.move_to_end(key)
-            return snapshot
+        if snapshot is not None:
+            # A scan that began after this request arrived is as new as a scan of our own, racy or not: requests
+            # that queued behind one scan share it instead of each walking the whole tree again.
+            shared = snapshot.started > arrived
+            if shared or (not fresh and _is_current(snapshot)):
+                _cache.move_to_end(key)
+                return snapshot
+        started = time.perf_counter()
         rows, stamps = scan_tree(base_dir, extensions, recursive, scan_depth)
         wall = time.time()
-        racy = any(wall - stamp / 1e9 < RACY_WINDOW for _, stamp in stamps)
+        racy = any(wall - stamp / 1e9 < _racy_window(stamp) for _, stamp in stamps)
         snapshot = Snapshot(
+            started=started,
             rows=rows,
             keys=[(-row[R_MTIME], row[R_REL]) for row in rows],
             index={row[R_REL]: position for position, row in enumerate(rows)},
