@@ -25,7 +25,7 @@ from .storage import (
 from .paths import get_output_directory, get_input_directory, get_i18n_directory, resolve_relpath, load_translation_file, LANGUAGE_CODE_RE
 from .scanner import _classify_kind, _placeholder_png
 from .listing import (
-    Filters, R_MTIME, R_REL, R_SIZE, Snapshot, build_items, get_snapshot, invalidate, iter_visible,
+    Filters, R_MTIME, R_REL, R_SIZE, Snapshot, build_items, get_snapshot, histogram, invalidate, iter_visible,
 )
 from .marks import MarkScope, reconcile_marks
 from . import thumbcache
@@ -98,6 +98,13 @@ def _int_param(params: Any, name: str, default: int, minimum: int = 1, maximum: 
     return value
 
 
+def _optional_int(value: Any) -> int | None:
+    try:
+        return int(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
 async def _thumb_response(request: web.Request, base_dir: Path, scope: str) -> web.StreamResponse:
     """Shared body of the output/input thumbnail endpoints."""
     config = load_config()
@@ -133,6 +140,14 @@ async def _thumb_response(request: web.Request, base_dir: Path, scope: str) -> w
         return respond(placeholder, cacheable=cacheable)
 
     kind = _classify_kind(path)
+    if kind == "mesh":
+        # Previews of 3D models are rendered by the browser (see web/meshpreview.js) and stored here. Until one
+        # exists the answer is a plain 404, which tells the page to render it.
+        stat = path.stat()
+        cached = thumbcache.lookup(thumbcache.cache_key(scope, relpath, int(stat.st_mtime), stat.st_size, width, height))
+        if cached is None:
+            raise web.HTTPNotFound(text="No preview yet")
+        return respond(cached)
     if kind != "image":
         return placeholder_response(kind)
 
@@ -152,6 +167,60 @@ async def _thumb_response(request: web.Request, base_dir: Path, scope: str) -> w
         LOGGER.debug("Thumbnail failure details", exc_info=True)
         return placeholder_response("other", cacheable=False)
     return respond(cached)
+
+
+MESH_PREVIEW_MAX_BYTES = 2 * 1024 * 1024
+MESH_PREVIEW_SIZES = (256, 512)
+
+
+def store_mesh_preview(base_dir: Path, scope: str, relpath: str, width: int, height: int, version: str, data: bytes) -> None:
+    """Keep a preview the browser rendered for a 3D model. Raises ValueError for anything that is not exactly that:
+    another kind of file, a size we do not serve, a file that changed since the page saw it, or bytes that are not
+    an image."""
+    if width not in MESH_PREVIEW_SIZES or height not in MESH_PREVIEW_SIZES:
+        raise ValueError("unsupported preview size")
+    if not data or len(data) > MESH_PREVIEW_MAX_BYTES:
+        raise ValueError("preview is empty or too large")
+    path = resolve_relpath(relpath, base_dir)
+    if not path.is_file() or _classify_kind(path) != "mesh":
+        raise ValueError("not a 3D model")
+    stat = path.stat()
+    if version != f"{int(stat.st_mtime)}-{stat.st_size}":
+        raise ValueError("the file changed")
+    key = thumbcache.cache_key(scope, relpath, int(stat.st_mtime), stat.st_size, width, height)
+    tmp_path = thumbcache.cache_root() / f".upload.{threading.get_ident()}.tmp"
+    tmp_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        tmp_path.write_bytes(data)
+        thumbcache.write_thumbnail(tmp_path, width, height, key)  # decodes and re-encodes: rejects non-images
+    except Exception as error:  # noqa: BLE001 - Pillow raises many kinds for broken or oversized input
+        raise ValueError("not a usable image") from error
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+async def _read_limited(request: web.Request, limit: int) -> bytes:
+    body = bytearray()
+    async for chunk in request.content.iter_chunked(65536):
+        body += chunk
+        if len(body) > limit:
+            raise web.HTTPRequestEntityTooLarge(max_size=limit, actual_size=len(body))
+    return bytes(body)
+
+
+async def _mesh_preview_upload(request: web.Request, base_dir: Path, scope: str) -> web.Response:
+    params = request.rel_url.query
+    relpath = params.get("relpath")
+    if not relpath:
+        raise web.HTTPBadRequest(text="relpath is required")
+    width = _int_param(params, "w", 256, maximum=2048)
+    height = _int_param(params, "h", width, maximum=2048)
+    data = await _read_limited(request, MESH_PREVIEW_MAX_BYTES)
+    try:
+        await asyncio.to_thread(store_mesh_preview, base_dir, scope, relpath, width, height, params.get("v", ""), data)
+    except ValueError as error:
+        raise web.HTTPBadRequest(text=str(error))
+    return web.json_response({"ok": True})
 
 
 def delete_assets(
@@ -314,7 +383,14 @@ def _prepare_view(base_dir: Path, hidden_prefix: str, params: dict[str, str]) ->
     query = params.get("query") or params.get("q") or ""
     return _View(
         snapshot=snapshot,
-        filters=Filters(hidden=hidden_relpaths, starred=starred, query=query.strip().lower()),
+        filters=Filters(
+            hidden=hidden_relpaths,
+            starred=starred,
+            query=query.strip().lower(),
+            starred_only=params.get("starred_only", "0") in TRUE_VALUES,
+            mtime_min=_optional_int(params.get("mtime_min")),
+            mtime_max=_optional_int(params.get("mtime_max")),
+        ),
         starred_first=params.get("starred_first", "0") in TRUE_VALUES,
     )
 
@@ -342,7 +418,8 @@ def _build_list_response(base_dir: Path, hidden_prefix: str, params: dict[str, s
     has_more = bool(limit) and len(rows) > limit
     if limit:
         rows = rows[:limit]
-    items = build_items(base_dir, rows, view.filters.starred)
+    # ``lite``: no workflow detection (no file reads), e.g. to select a whole date group.
+    items = build_items(base_dir, rows, view.filters.starred, detect_workflows=params.get("lite", "0") not in TRUE_VALUES)
     next_cursor = (
         encode_cursor(items[-1], view.starred_first) if items else params.get("cursor") or ""
     )
@@ -352,6 +429,21 @@ def _build_list_response(base_dir: Path, hidden_prefix: str, params: dict[str, s
         "has_more": has_more,
         "latest_mtime": latest_mtime,
     }
+
+
+MAX_HISTOGRAM_EDGES = 400
+
+
+def _build_histogram_response(base_dir: Path, hidden_prefix: str, params: dict[str, str]) -> dict[str, Any]:
+    """Counts of the visible files per time interval; ``edges`` are epoch seconds, ascending."""
+    try:
+        edges = [int(edge) for edge in (params.get("edges") or "").split(",") if edge]
+    except ValueError:
+        raise web.HTTPBadRequest(text="edges must be integers")
+    if len(edges) > MAX_HISTOGRAM_EDGES or edges != sorted(edges):
+        raise web.HTTPBadRequest(text="edges must be ascending and not too many")
+    view = _prepare_view(base_dir, hidden_prefix, params)
+    return histogram(view.snapshot, view.filters, edges)
 
 
 def _build_window_response(base_dir: Path, hidden_prefix: str, params: dict[str, str]) -> dict[str, Any]:
@@ -394,6 +486,18 @@ async def input_list(request: web.Request) -> web.Response:
     params = request.rel_url.query
     LOGGER.debug("Assets+ input list request params=%s", dict(params))
     result = await asyncio.to_thread(_build_list_response, get_input_directory(), "input/", params)
+    return web.json_response(result)
+
+
+@PromptServer.instance.routes.get("/assets_plus/output/histogram")
+async def output_histogram(request: web.Request) -> web.Response:
+    result = await asyncio.to_thread(_build_histogram_response, get_output_directory(), "", request.rel_url.query)
+    return web.json_response(result)
+
+
+@PromptServer.instance.routes.get("/assets_plus/input/histogram")
+async def input_histogram(request: web.Request) -> web.Response:
+    result = await asyncio.to_thread(_build_histogram_response, get_input_directory(), "input/", request.rel_url.query)
     return web.json_response(result)
 
 
@@ -462,6 +566,16 @@ async def output_thumb(request: web.Request) -> web.StreamResponse:
 @PromptServer.instance.routes.get("/assets_plus/input/thumb")
 async def input_thumb(request: web.Request) -> web.StreamResponse:
     return await _thumb_response(request, get_input_directory(), "input")
+
+
+@PromptServer.instance.routes.post("/assets_plus/output/thumb_upload")
+async def output_thumb_upload(request: web.Request) -> web.Response:
+    return await _mesh_preview_upload(request, get_output_directory(), "output")
+
+
+@PromptServer.instance.routes.post("/assets_plus/input/thumb_upload")
+async def input_thumb_upload(request: web.Request) -> web.Response:
+    return await _mesh_preview_upload(request, get_input_directory(), "input")
 
 
 @PromptServer.instance.routes.post("/assets_plus/thumb/clear")

@@ -22,6 +22,10 @@
   --assets-plus-accent: var(--p-primary-color, #2563eb);
   --assets-plus-accent-contrast: var(--p-primary-contrast-color, #ffffff);
   --assets-plus-thumb-bg: var(--comfy-menu-bg, var(--bg-color, #0f172a));
+  --assets-plus-thumb-h: 120px;
+  --assets-plus-card-h: 122px;
+  --assets-plus-wave-played: var(--fg-color, #e5e7eb);
+  --assets-plus-wave-idle: rgba(148, 163, 184, 0.45);
   --assets-plus-glyph: var(--fg-color, #e5e7eb);
   --assets-plus-halo: var(--comfy-menu-bg, var(--bg-color, #0f172a));
   background: var(--assets-plus-panel-bg);
@@ -174,9 +178,9 @@
   /* Tiles outside the viewport are not laid out or painted: a full reflow of 6000 tiles dropped from ~700 ms
      to ~80 ms. The tile height is fixed (thumb 120px + border), so the scrollbar stays exact. */
   content-visibility: auto;
-  contain-intrinsic-block-size: auto 122px;
+  contain-intrinsic-block-size: auto var(--assets-plus-card-h);
   /* Tiles far from the viewport are empty shells (see hydrateCard) and must keep their height. */
-  min-height: 122px;
+  min-height: var(--assets-plus-card-h);
   box-sizing: border-box;
 }
 .assets-plus-card.selected {
@@ -301,7 +305,7 @@
 }
 .assets-plus-thumb {
   width: 100%;
-  height: 120px;
+  height: var(--assets-plus-thumb-h);
   background: var(--assets-plus-thumb-bg);
   display: flex;
   align-items: center;
@@ -769,4 +773,564 @@
   min-height: 0;
   flex: 1;
   overflow: auto;
+}
+
+/* ---- View modes: small tiles (default), large tiles, list ---- */
+.assets-plus-view-large {
+  --assets-plus-thumb-h: 200px;
+  --assets-plus-card-h: 202px;
+}
+.assets-plus-view-large .assets-plus-grid {
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+}
+.assets-plus-view-list {
+  --assets-plus-card-h: 64px;
+}
+.assets-plus-view-list .assets-plus-grid {
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+.assets-plus-view-list .assets-plus-card {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  padding: 0 8px;
+  height: var(--assets-plus-card-h);
+}
+.assets-plus-view-list .assets-plus-thumb {
+  flex: 0 0 48px;
+  width: 48px;
+  height: 48px;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.assets-plus-row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.assets-plus-row-name {
+  display: flex;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.assets-plus-row-name-head {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.assets-plus-row-name-tail {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.assets-plus-row-meta {
+  font-size: 12px;
+  opacity: 0.7;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* In a row the star and the hover panel sit at the right edge, vertically centred. */
+.assets-plus-view-list .assets-plus-card-star {
+  right: 8px;
+  bottom: auto;
+  top: 8px;
+}
+.assets-plus-view-list .assets-plus-select-mark {
+  background: rgba(34, 197, 94, 0.28);
+  justify-content: flex-start;
+  padding-left: 14px;
+}
+.assets-plus-view-list .assets-plus-select-mark .pi {
+  font-size: 26px;
+}
+.assets-plus-view-list .assets-plus-card-kind {
+  display: none;
+}
+
+/* ---- Audio: note tile, waveform, mini player ---- */
+.assets-plus-thumb-audio {
+  position: relative;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--fg-color, #e5e7eb);
+  background: color-mix(in srgb, var(--assets-plus-thumb-bg) 80%, var(--fg-color, #e5e7eb) 8%);
+}
+.assets-plus-audio-note {
+  display: flex;
+  opacity: 0.9;
+}
+.assets-plus-audio-note svg {
+  width: 38px;
+  height: 38px;
+}
+.assets-plus-view-large .assets-plus-audio-note svg {
+  width: 64px;
+  height: 64px;
+}
+.assets-plus-view-list .assets-plus-audio-note svg {
+  width: 26px;
+  height: 26px;
+}
+.assets-plus-audio-caption {
+  font-size: 13px;
+  font-weight: 600;
+}
+.assets-plus-audio {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.assets-plus-audio-tile {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 6px;
+  gap: 6px;
+}
+.assets-plus-audio-button {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(148, 163, 184, 0.28);
+  color: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+.assets-plus-audio-button:hover {
+  background: rgba(148, 163, 184, 0.45);
+}
+.assets-plus-audio-button .pi {
+  font-size: 11px;
+}
+.assets-plus-audio-wave {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 22px;
+  cursor: pointer;
+}
+.assets-plus-audio-time {
+  flex: 0 0 auto;
+  font-size: 11px;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.assets-plus-audio-tile .assets-plus-audio-time {
+  display: none;
+}
+.assets-plus-view-large .assets-plus-audio-tile .assets-plus-audio-time {
+  display: inline;
+}
+.assets-plus-audio-row .assets-plus-audio-wave {
+  max-width: 220px;
+}
+.assets-plus-card[data-type="audio"] .assets-plus-card-star {
+  top: 6px;
+  left: 6px;
+  right: auto;
+  bottom: auto;
+}
+.assets-plus-view-list .assets-plus-card[data-type="audio"] .assets-plus-card-star {
+  top: 8px;
+  left: auto;
+  right: 8px;
+}
+.assets-plus-selection-mode .assets-plus-audio {
+  pointer-events: none;
+}
+
+/* Lens player */
+.assets-plus-audio-lens {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  width: min(680px, 90vw);
+  padding: 22px 26px 18px;
+  border-radius: 16px;
+  background: #1b1b1f;
+  color: #f1f1f4;
+  --assets-plus-wave-played: #ffffff;
+  --assets-plus-wave-idle: rgba(255, 255, 255, 0.35);
+}
+.assets-plus-audio-lens .assets-plus-audio-wavebox {
+  height: 120px;
+}
+.assets-plus-audio-lens .assets-plus-audio-wave {
+  width: 100%;
+  height: 100%;
+}
+.assets-plus-audio-times {
+  display: flex;
+  justify-content: space-between;
+}
+.assets-plus-audio-lens .assets-plus-audio-time {
+  font-size: 12px;
+}
+.assets-plus-audio-transport {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+}
+.assets-plus-audio-centre {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.assets-plus-audio-lens .assets-plus-audio-button {
+  width: 34px;
+  height: 34px;
+  background: transparent;
+}
+.assets-plus-audio-lens .assets-plus-audio-button:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+.assets-plus-audio-lens .assets-plus-audio-play {
+  width: 44px;
+  height: 44px;
+  background: rgba(255, 255, 255, 0.14);
+}
+.assets-plus-audio-lens .assets-plus-audio-button .pi {
+  font-size: 16px;
+}
+.assets-plus-audio-volume {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+.assets-plus-audio-slider {
+  width: 90px;
+  accent-color: #ffffff;
+}
+
+/* View menu */
+.assets-plus-view-check {
+  margin-left: auto;
+}
+.assets-plus-view-check.hidden {
+  visibility: hidden;
+}
+
+/* Rows are quiet: no hover buttons, everything is in the right-click menu. A star shows only as an indicator. */
+.assets-plus-view-list .assets-plus-card-menu,
+.assets-plus-view-list .assets-plus-card-star:not(.active) {
+  display: none;
+}
+.assets-plus-view-list .assets-plus-card-star {
+  pointer-events: none;
+}
+.assets-plus-view-list .assets-plus-row-main {
+  padding-right: 30px;
+}
+
+/* ---- 3D models: a big cube until the browser has rendered the preview ---- */
+[hidden] {
+  display: none !important;
+}
+.assets-plus-thumb-mesh {
+  position: relative;
+  color: var(--fg-color, #e5e7eb);
+  background: color-mix(in srgb, var(--assets-plus-thumb-bg) 80%, var(--fg-color, #e5e7eb) 8%);
+}
+.assets-plus-mesh-icon {
+  display: flex;
+  opacity: 0.85;
+}
+.assets-plus-mesh-icon .pi {
+  font-size: 44px;
+}
+.assets-plus-view-large .assets-plus-mesh-icon .pi {
+  font-size: 72px;
+}
+.assets-plus-view-list .assets-plus-mesh-icon .pi {
+  font-size: 24px;
+}
+.assets-plus-thumb-mesh img {
+  position: absolute;
+  inset: 0;
+  object-fit: contain;
+}
+.assets-plus-thumb-mesh img.pending {
+  opacity: 0;
+}
+
+/* ---- Filters, chips, popovers, date groups ---- */
+.assets-plus-filter-button,
+.assets-plus-date-button {
+  position: relative;
+}
+.assets-plus-action-button.has-filter::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--assets-plus-accent);
+}
+.assets-plus-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.assets-plus-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--assets-plus-accent);
+  background: color-mix(in srgb, var(--assets-plus-accent) 18%, transparent);
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.assets-plus-chip .pi {
+  font-size: 10px;
+  opacity: 0.8;
+}
+.assets-plus-chip:hover {
+  background: color-mix(in srgb, var(--assets-plus-accent) 32%, transparent);
+}
+.assets-plus-popover {
+  min-width: 230px;
+}
+.assets-plus-popover-title {
+  padding: 4px 10px 2px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.65;
+}
+.assets-plus-popover-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.assets-plus-popover-row:hover {
+  background: rgba(128, 128, 128, 0.18);
+}
+.assets-plus-popover-row input[type="checkbox"] {
+  accent-color: var(--assets-plus-accent);
+}
+.assets-plus-popover-select {
+  justify-content: space-between;
+}
+.assets-plus-popover-select select {
+  min-width: 130px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color, rgba(148, 163, 184, 0.35));
+  background: var(--comfy-input-bg, #222);
+  color: inherit;
+}
+.assets-plus-popover .assets-plus-context-menu-item:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Date headers, like the Windows Explorer's group headings. */
+.assets-plus-group-header {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px 4px;
+  font-size: 14px;
+  border-bottom: 1px solid var(--assets-plus-border);
+  user-select: none;
+}
+.assets-plus-group-header .pi {
+  font-size: 11px;
+  opacity: 0.6;
+}
+.assets-plus-group-count {
+  opacity: 0.6;
+}
+.assets-plus-selection-mode .assets-plus-group-header {
+  cursor: pointer;
+  border-radius: 6px 6px 0 0;
+}
+.assets-plus-selection-mode .assets-plus-group-header:hover {
+  background: rgba(128, 128, 128, 0.16);
+}
+.assets-plus-selection-mode .assets-plus-group-header.selected {
+  background: rgba(34, 197, 94, 0.28);
+  border-bottom-color: #22c55e;
+}
+.assets-plus-group-header.busy {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+/* Folded date groups: the chevron turns to the side, the tiles are gone, count and header stay. */
+.assets-plus-group-header {
+  cursor: pointer;
+}
+.assets-plus-group-chevron {
+  transition: transform 0.12s ease;
+}
+.assets-plus-group-header.collapsed .assets-plus-group-chevron {
+  transform: rotate(-90deg);
+}
+
+/* ---- Calendar (the Windows one: days, months, years) ---- */
+.assets-plus-date-menu {
+  min-width: 300px;
+}
+.assets-plus-calendar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 6px 8px 8px;
+}
+.assets-plus-calendar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.assets-plus-calendar-title {
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: 15px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  text-transform: capitalize;
+}
+.assets-plus-calendar-title:hover:not(:disabled) {
+  background: rgba(128, 128, 128, 0.2);
+}
+.assets-plus-calendar-title:disabled {
+  cursor: default;
+}
+.assets-plus-calendar-nav {
+  display: flex;
+  gap: 2px;
+}
+.assets-plus-calendar-step {
+  border: 0;
+  background: none;
+  color: inherit;
+  width: 30px;
+  height: 28px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.assets-plus-calendar-step:hover {
+  background: rgba(128, 128, 128, 0.2);
+}
+.assets-plus-calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+.assets-plus-calendar-months,
+.assets-plus-calendar-years {
+  grid-template-columns: repeat(4, 1fr);
+}
+.assets-plus-calendar-weekday {
+  text-align: center;
+  font-size: 11px;
+  opacity: 0.6;
+  padding: 2px 0 4px;
+  text-transform: capitalize;
+}
+.assets-plus-calendar-cell {
+  position: relative;
+  height: 34px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.assets-plus-calendar-months .assets-plus-calendar-cell,
+.assets-plus-calendar-years .assets-plus-calendar-cell {
+  height: 48px;
+}
+.assets-plus-calendar-cell:hover {
+  background: rgba(128, 128, 128, 0.22);
+}
+.assets-plus-calendar-cell.outside {
+  opacity: 0.45;
+}
+.assets-plus-calendar-cell.empty {
+  opacity: 0.38;
+}
+.assets-plus-calendar-cell.empty.outside {
+  opacity: 0.25;
+}
+.assets-plus-calendar-cell.has-files::after {
+  content: "";
+  position: absolute;
+  bottom: 4px;
+  left: 50%;
+  width: 5px;
+  height: 5px;
+  margin-left: -2.5px;
+  border-radius: 50%;
+  background: var(--assets-plus-accent);
+}
+.assets-plus-calendar-cell.today {
+  border-color: var(--assets-plus-accent);
+}
+.assets-plus-calendar-cell.selected {
+  background: color-mix(in srgb, var(--assets-plus-accent) 38%, transparent);
+  font-weight: 600;
+}
+.assets-plus-calendar-hint {
+  font-size: 11px;
+  opacity: 0.6;
+  line-height: 1.35;
+}
+.assets-plus-calendar-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.assets-plus-calendar-show,
+.assets-plus-calendar-clear {
+  border: 1px solid var(--border-color, rgba(148, 163, 184, 0.35));
+  background: none;
+  color: inherit;
+  padding: 5px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.assets-plus-calendar-show {
+  background: var(--assets-plus-accent);
+  border-color: var(--assets-plus-accent);
+  color: var(--assets-plus-accent-contrast);
+}
+.assets-plus-calendar-show:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* The popovers live in <body>, outside .assets-plus-root, so they need the colour variables themselves. */
+.assets-plus-popover,
+.assets-plus-view-menu {
+  --assets-plus-accent: var(--p-primary-color, #2563eb);
+  --assets-plus-accent-contrast: var(--p-primary-contrast-color, #ffffff);
+  --assets-plus-border: var(--border-color, rgba(148, 163, 184, 0.35));
+  user-select: none;
 }
