@@ -5,12 +5,9 @@ extension can touch, so that reviewers and automated scanners can see what is in
 
 ## What the extension does and does not do
 
-- **One optional outgoing request, nothing else.** Once per start the backend asks `api.comfy.org` (the version
-  list of this node) and, for a git clone on `main`, `api.github.com` (the latest commit of `main`), to say in the
-  start-up banner whether a newer version exists (`assets_plus/updates.py`, standard library `urllib`). The requests
-  are read-only GETs, carry no identifier, path or usage data, and `"update_check": false` in `config.json` turns
-  them off. The frontend (`web/`) calls only ComfyUI's own origin: `/assets_plus/*`, `/view` and ComfyUI's
-  settings API. There are no other hard-coded URLs.
+- **No outgoing network requests.** The backend (`assets_plus/`) imports no networking library and contacts
+  no external host. The frontend (`web/`) calls only ComfyUI's own origin: `/assets_plus/*`, `/view` and
+  ComfyUI's settings API. There are no hard-coded URLs.
 - **No code execution.** No `eval`, `exec`, `subprocess`, `os.system`, shell invocation, runtime package
   installation or dynamic imports of downloaded code. Nothing is obfuscated.
 - **No environment or credential access.** The extension does not read environment variables, tokens or
@@ -30,7 +27,6 @@ extension can touch, so that reviewers and automated scanners can see what is in
 | Delete, mode *hide* | Records the file in `hidden.json`; the file is not touched. |
 | Move to Imported | `output/<file>` to the input root with `os.link` plus `unlink`, or copy, size check, `os.replace`, `unlink` across volumes. Never overwrites; name clashes get a numeric suffix. |
 | Star | Records the file in `starred.json`; the file is not touched. |
-| Update check | Once per start, in a background thread, two read-only GET requests (the node's version list at `api.comfy.org` and the latest commit of `main` at `api.github.com`) to say in the start-up banner whether a newer version exists. Nothing is sent but the request. `"update_check": false` in `config.json` turns it off. |
 | Thumbnails | Pillow reads the image and writes a PNG preview into `user/__assets_plus/thumb_cache/`. |
 
 `ctypes` is used only in `assets_plus/trash.py`, only on Windows, only to call `SHFileOperationW` (the

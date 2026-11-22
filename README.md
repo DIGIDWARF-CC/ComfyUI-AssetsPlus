@@ -45,7 +45,6 @@ Available options:
 - `default_delete_mode`: `"trash" | "delete" | "hide"`.
 - `scan_depth`: depth limit for recursive scanning (`null` = no limit).
 - `log_level`: how much Assets+ writes to the console, `"silent" | "quiet" | "info" | "debug"` (default `"quiet"`, also a setting, see below).
-- `update_check`: `true` (default) or `false`; whether the start-up banner looks for newer versions (see [Console output](#console-output)).
 
 UI settings (ComfyUI Settings → Assets+ Explorer):
 - **Assets+ page size** — number of items fetched per page.
@@ -95,20 +94,15 @@ Example:
 
 ## Console output
 
-Assets+ is quiet by default. At start-up it prints one banner with the installed version and whether it is a release or a
-nightly (git) copy, and then only warnings and errors:
+Assets+ is quiet by default. At start-up it prints one line with the installed version and then only warnings and
+errors:
 
 ```
-Assets+ v1.1.2 · nightly e40842e  ✓ up to date
-Assets+ v1.1.2 · nightly e40842e
-  ↑ release 1.2.0 is available (flagged by the registry scan, waiting for a review)
-  ↑ nightly: newer code on main (e40842e → 9ac81d2)
+Assets+ v1.1.2 · ready
 ```
 
-To write that banner, a background thread makes two read-only requests once per start, with a short timeout: the version
-list of this node at `api.comfy.org` (newer releases, flagged or not) and, for a git clone on `main`, the latest commit
-of `main` at `api.github.com`. Nothing is sent but the requests themselves. Offline or blocked, the banner simply has no
-update lines. Set `"update_check": false` in `config.json` to turn the requests off.
+It makes no network requests and reads nothing but its own `pyproject.toml` for that line; whether a newer version
+exists is for ComfyUI-Manager to tell you.
 
 ## Deletion modes
 

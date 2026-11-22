@@ -1,6 +1,6 @@
 """Log verbosity of the extension.
 
-The default is quiet: a single start-up banner (see ``updates.py``), then only warnings and errors. The level is a
+The default is quiet: a single start-up banner (see ``banner.py``), then only warnings and errors. The level is a
 setting (config.json ``log_level``, changeable in ComfyUI's settings):
 
 * ``silent``: errors only, no banner

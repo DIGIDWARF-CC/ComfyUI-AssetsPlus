@@ -29,7 +29,6 @@ class AssetsPlusConfig:
     default_delete_mode: str = "trash"
     scan_depth: int | None = None
     log_level: str = "quiet"
-    update_check: bool = True
 
 
 LOG_LEVELS = ("silent", "quiet", "info", "debug")
@@ -154,9 +153,6 @@ def load_config() -> AssetsPlusConfig:
     log_level = str(raw.get("log_level", DEFAULT_CONFIG.log_level)).strip().lower()
     if log_level not in LOG_LEVELS:
         log_level = DEFAULT_CONFIG.log_level
-    update_check = raw.get("update_check", DEFAULT_CONFIG.update_check)
-    if not isinstance(update_check, bool):
-        update_check = DEFAULT_CONFIG.update_check
 
     config = AssetsPlusConfig(
         allowed_extensions=allowed_extensions,
@@ -166,7 +162,6 @@ def load_config() -> AssetsPlusConfig:
         default_delete_mode=default_delete_mode,
         scan_depth=scan_depth,
         log_level=log_level,
-        update_check=update_check,
     )
     _config_cache = config
     _config_cache_ts = now
