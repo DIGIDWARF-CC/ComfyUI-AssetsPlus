@@ -8,9 +8,10 @@ import {
   DEFAULT_CONFIRM_DELETE_STARRED, DEFAULT_STARRED_FIRST,
   DEFAULT_SHOW_OVERLAY_HELP, DEFAULT_KEEP_OVERLAY_OPEN_ON_WORKFLOW,
   THUMB_QUALITY_SIZES, VIDEO_THUMB_EXTENSIONS, DEFAULT_EXTENSIONS,
-  VIEW_MODES, DEFAULT_VIEW_MODE, VIEW_MODE_STORAGE_KEY
+  VIEW_MODES, DEFAULT_VIEW_MODE, VIEW_MODE_STORAGE_KEY, DEFAULT_MESH_PREVIEW_MAX_MB
 } from './constants.js';
 import { createAudioControl } from './audio.js';
+import { meshPreviews } from './meshpreview.js';
 import {
   log, warn, sleep, clamp, resolveApp, fetchJson, buildViewUrl, itemVersion,
   buildThumbUrl, getFileExtension, normalizeWorkflow,
@@ -26,7 +27,7 @@ const CARD_HYDRATE_MARGIN = "1500px 0px";
 const INITIAL_HYDRATED = 60;
 
 // Corner badge icon per media type (images need none: the thumbnail says it all).
-const CARD_KIND_ICONS = { video: "pi-video", audio: "pi-volume-up" };
+const CARD_KIND_ICONS = { video: "pi-video", audio: "pi-volume-up", mesh: "pi-box" };
 
 // A music note for audio tiles (PrimeIcons has none): the "music_note" glyph of Google's Material Icons
 // (Apache-2.0, see VENDORED.md).
@@ -1698,6 +1699,25 @@ export class AssetsPlusExplorer {
       });
       card._audioControl = audioControl;
       if (!isList) thumb.appendChild(audioControl.element);
+    } else if (item.type === "mesh") {
+      // A big cube until the browser has rendered the model (see requestMeshPreview), then the picture on top.
+      thumb.classList.add("assets-plus-thumb-mesh");
+      const cube = createElement("div", { className: "assets-plus-mesh-icon" });
+      cube.innerHTML = '<i class="pi pi-box"></i>';
+      const preview = document.createElement("img");
+      preview.alt = item.filename;
+      preview.decoding = "async";
+      preview.draggable = false;
+      // Invisible but laid out (a hidden image has no box, so the lazy loader would never fetch it).
+      preview.className = "assets-plus-mesh-preview pending";
+      preview.addEventListener("load", () => {
+        preview.classList.remove("pending");
+        cube.hidden = true;
+      });
+      preview.addEventListener("error", () => this.requestMeshPreview(item, thumbnailSize, preview, thumbUrl));
+      thumb.appendChild(cube);
+      thumb.appendChild(preview);
+      this.observeMedia(preview, thumbUrl);
     } else if (item.type === "video" && VIDEO_THUMB_EXTENSIONS.has(extension)) {
       const video = document.createElement("video");
       video.muted = true;
@@ -1779,6 +1799,26 @@ export class AssetsPlusExplorer {
       event.stopPropagation();
       this.toggleContextMenu(item, moreButton);
     });
+  }
+
+  /** The server has no preview of this model yet: have the browser render one (unless the file is too big). */
+  requestMeshPreview(item, size, image, thumbUrl) {
+    if (image._meshRequested || !image.isConnected) return;
+    const limitMb = Number(this.getSetting(SETTINGS.meshPreviewMaxMb, DEFAULT_MESH_PREVIEW_MAX_MB));
+    if (!(limitMb > 0) || item.size > limitMb * 1024 * 1024) return;
+    image._meshRequested = true;
+    const tab = this.state.tab;
+    const version = itemVersion(item);
+    const params = new URLSearchParams({ relpath: item.relpath, w: String(size), h: String(size), v: version });
+    meshPreviews
+      .render(`${tab}|${item.relpath}|${version}|${size}`, {
+        modelUrl: buildViewUrl(item.relpath, tab, version),
+        uploadUrl: `/assets_plus/${tab}/thumb_upload?${params.toString()}`,
+        size,
+      })
+      .then((ok) => {
+        if (ok && image.isConnected) image.src = `${thumbUrl}&ready=1`;
+      });
   }
 
   /** Tear down the content of a tile that is far from the viewport (never one that is in use). */

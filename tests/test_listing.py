@@ -346,6 +346,62 @@ def test_thumbnail_cache_layout_format_and_keys() -> None:
     assert thumbcache.cache_key("output", "a.png", 1, 1, 256, 256) != thumbcache.cache_key("output", "a.png", 1, 1, 512, 512)
 
 
+def test_mesh_previews_rendered_by_the_browser_are_validated_and_stored() -> None:
+    import io
+
+    from aiohttp import web
+    from PIL import Image
+
+    from assets_plus import handlers, thumbcache
+
+    folder = WORK / "meshes"
+    folder.mkdir(exist_ok=True)
+    model = folder / "duck.glb"
+    model.write_bytes(b"glTF" + os.urandom(64))
+    picture = folder / "photo.png"
+    make_noise_image(picture, 64)
+    stat = model.stat()
+    version = f"{int(stat.st_mtime)}-{stat.st_size}"
+
+    def webp(size: int = 256) -> bytes:
+        buffer = io.BytesIO()
+        Image.new("RGBA", (size, size), (200, 160, 40, 255)).save(buffer, format="WEBP")
+        return buffer.getvalue()
+
+    key = thumbcache.cache_key("output", "duck.glb", int(stat.st_mtime), stat.st_size, 256, 256)
+    assert thumbcache.lookup(key) is None, "no preview before the browser sent one"
+
+    def refused(**changes: object) -> None:
+        arguments = dict(base_dir=folder, scope="output", relpath="duck.glb", width=256, height=256, version=version, data=webp())
+        arguments.update(changes)
+        try:
+            handlers.store_mesh_preview(**arguments)
+        except ValueError:
+            return
+        raise AssertionError(f"must be refused: {changes}")
+
+    refused(relpath="photo.png")  # only 3D models take an uploaded preview
+    refused(version="1-1")  # the file changed since the page saw it
+    refused(width=300, height=300)
+    refused(data=b"")
+    refused(data=b"definitely not an image")
+    refused(data=b"\0" * (handlers.MESH_PREVIEW_MAX_BYTES + 1))
+    try:
+        handlers.store_mesh_preview(folder, "output", "../outside.glb", 256, 256, version, webp())
+    except (ValueError, web.HTTPException):
+        pass
+    else:
+        raise AssertionError("a path outside the gallery must be refused")
+    assert thumbcache.lookup(key) is None, "refused uploads must leave nothing behind"
+
+    handlers.store_mesh_preview(folder, "output", "duck.glb", 256, 256, version, webp())
+    stored = thumbcache.lookup(key)
+    assert stored is not None
+    with Image.open(stored) as preview:
+        assert preview.size == (256, 256)
+    assert not list(thumbcache.cache_root().glob(".upload.*")), "no temporary upload file may stay"
+
+
 def test_thumbnail_cache_evicts_least_recently_used_down_to_the_low_water_mark() -> None:
     from assets_plus import thumbcache
 

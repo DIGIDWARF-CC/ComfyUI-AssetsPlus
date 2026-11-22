@@ -124,5 +124,7 @@
   "audio.previous": "Назад",
   "audio.next": "Вперёд",
   "audio.mute": "Без звука",
-  "audio.volume": "Громкость"
+  "audio.volume": "Громкость",
+  "settings.mesh_preview_max_mb": "Assets+ самая большая 3D-модель для превью (МБ)",
+  "settings.mesh_preview_max_mb.tooltip": "Для 3D-моделей до этого размера в галерее рисуется превью; более тяжёлые остаются с кубиком. 0 выключает превью."
 }

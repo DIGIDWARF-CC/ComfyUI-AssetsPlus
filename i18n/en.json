@@ -124,5 +124,7 @@
   "audio.previous": "Previous",
   "audio.next": "Next",
   "audio.mute": "Mute",
-  "audio.volume": "Volume"
+  "audio.volume": "Volume",
+  "settings.mesh_preview_max_mb": "Assets+ largest 3D model to preview (MB)",
+  "settings.mesh_preview_max_mb.tooltip": "3D models up to this size get a rendered preview in the gallery; bigger ones keep the cube. 0 turns the previews off."
 }

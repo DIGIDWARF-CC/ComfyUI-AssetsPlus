@@ -28,6 +28,7 @@ extension can touch, so that reviewers and automated scanners can see what is in
 | Move to Imported | `output/<file>` to the input root with `os.link` plus `unlink`, or copy, size check, `os.replace`, `unlink` across volumes. Never overwrites; name clashes get a numeric suffix. |
 | Star | Records the file in `starred.json`; the file is not touched. |
 | Thumbnails | Pillow reads the image and writes a WebP preview into `user/__assets_plus/thumb_cache/`. |
+| 3D model previews | The browser draws the model with the bundled `model-viewer` and sends the picture to ComfyUI's own `/assets_plus/*/thumb_upload`. The server accepts it only for an existing `.glb`/`.gltf` of the gallery, only for the file version the page saw, only up to 2 MB, and only if Pillow can decode it; it is re-encoded into the same thumbnail cache. |
 
 `ctypes` is used only in `assets_plus/trash.py`, only on Windows, only to call `SHFileOperationW` (the
 Recycle Bin API) on a single absolute path inside the output or input directory.

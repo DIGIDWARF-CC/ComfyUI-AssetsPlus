@@ -1033,3 +1033,34 @@
 .assets-plus-view-list .assets-plus-row-main {
   padding-right: 30px;
 }
+
+/* ---- 3D models: a big cube until the browser has rendered the preview ---- */
+[hidden] {
+  display: none !important;
+}
+.assets-plus-thumb-mesh {
+  position: relative;
+  color: var(--fg-color, #e5e7eb);
+  background: color-mix(in srgb, var(--assets-plus-thumb-bg) 80%, var(--fg-color, #e5e7eb) 8%);
+}
+.assets-plus-mesh-icon {
+  display: flex;
+  opacity: 0.85;
+}
+.assets-plus-mesh-icon .pi {
+  font-size: 44px;
+}
+.assets-plus-view-large .assets-plus-mesh-icon .pi {
+  font-size: 72px;
+}
+.assets-plus-view-list .assets-plus-mesh-icon .pi {
+  font-size: 24px;
+}
+.assets-plus-thumb-mesh img {
+  position: absolute;
+  inset: 0;
+  object-fit: contain;
+}
+.assets-plus-thumb-mesh img.pending {
+  opacity: 0;
+}

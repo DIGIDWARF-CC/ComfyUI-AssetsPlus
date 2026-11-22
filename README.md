@@ -49,6 +49,7 @@ Available options:
 
 UI settings (ComfyUI Settings → Assets+ Explorer):
 - **Assets+ file formats** — check boxes per format (images, video, audio, 3D models); at least one stays on. Saved to `config.json`.
+- **Assets+ largest 3D model to preview (MB)** — 3D models up to this size get a rendered preview tile (default `64`, `0` turns the previews off); bigger ones keep the cube.
 - **Assets+ page size** — number of items fetched per page.
 - **Assets+ confirm deletions** — toggle confirmation dialogs for delete/hide actions.
 - **Assets+ always confirm deleting starred images** — ask for confirmation when starred items are deleted, even if general confirmations are off.
@@ -90,6 +91,7 @@ Example:
 * Sticky header with icon-based actions (search toggle, selection mode, select all, invert selection, star/move/download/delete of the selection) while only the gallery area scrolls.
 * Three views, chosen with the sliders button in the header and remembered by the browser: list (name, size and date per row), small tiles and large tiles (sharper previews).
 * Audio is a first-class citizen: a note tile with a waveform and a play button, a list row that plays in place (one sound at a time), and a lens player with waveform, seek, volume, previous/next and Space to play/pause. The waveform is drawn in the browser from the file the server already serves; files over a few MB get a placeholder wave on tiles.
+* 3D models (`.glb`, `.gltf`) get a real preview: a big cube until the browser has drawn the model (one at a time, with the bundled `model-viewer`), then the picture, which is stored in the thumbnail cache like any other. Files over the size limit keep the cube; every non-image tile has a small badge in its corner.
 * Server-side search optimized for large galleries.
 * Lazy loading of thumbnails and paged scrolling for large galleries.
 * Built for big folders: the server keeps a snapshot of the folder tree (revalidated by directory timestamps, rescanned when anything changes) and serves pages lazily from it, workflow detection only runs for the files on the page, and thumbnails are cached by the browser. The lens can jump to the oldest file or step past the loaded part of the gallery without loading everything in between. The refresh button forces a fresh scan.

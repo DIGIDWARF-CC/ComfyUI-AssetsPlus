@@ -13,6 +13,7 @@ export const VIEW_MODES = ["list", "small", "large"];
 export const DEFAULT_VIEW_MODE = "small";
 export const VIEW_MODE_STORAGE_KEY = "assetsPlus.viewMode";
 export const DEFAULT_LIST_LIMIT = 200;
+export const DEFAULT_MESH_PREVIEW_MAX_MB = 64;
 export const DEFAULT_THUMB_QUALITY = "low";
 export const THUMB_QUALITY_SIZES = {
   low: 256,
@@ -88,6 +89,7 @@ export const SETTINGS = {
   language: "AssetsPlus.Language",
   logLevel: "AssetsPlus.LogLevel",
   formats: "AssetsPlus.Formats",
+  meshPreviewMaxMb: "AssetsPlus.MeshPreviewMaxMb",
 };
 
 export const SHORTCUT_KEY_LABELS = {

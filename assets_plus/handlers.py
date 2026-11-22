@@ -133,6 +133,14 @@ async def _thumb_response(request: web.Request, base_dir: Path, scope: str) -> w
         return respond(placeholder, cacheable=cacheable)
 
     kind = _classify_kind(path)
+    if kind == "mesh":
+        # Previews of 3D models are rendered by the browser (see web/meshpreview.js) and stored here. Until one
+        # exists the answer is a plain 404, which tells the page to render it.
+        stat = path.stat()
+        cached = thumbcache.lookup(thumbcache.cache_key(scope, relpath, int(stat.st_mtime), stat.st_size, width, height))
+        if cached is None:
+            raise web.HTTPNotFound(text="No preview yet")
+        return respond(cached)
     if kind != "image":
         return placeholder_response(kind)
 
@@ -152,6 +160,60 @@ async def _thumb_response(request: web.Request, base_dir: Path, scope: str) -> w
         LOGGER.debug("Thumbnail failure details", exc_info=True)
         return placeholder_response("other", cacheable=False)
     return respond(cached)
+
+
+MESH_PREVIEW_MAX_BYTES = 2 * 1024 * 1024
+MESH_PREVIEW_SIZES = (256, 512)
+
+
+def store_mesh_preview(base_dir: Path, scope: str, relpath: str, width: int, height: int, version: str, data: bytes) -> None:
+    """Keep a preview the browser rendered for a 3D model. Raises ValueError for anything that is not exactly that:
+    another kind of file, a size we do not serve, a file that changed since the page saw it, or bytes that are not
+    an image."""
+    if width not in MESH_PREVIEW_SIZES or height not in MESH_PREVIEW_SIZES:
+        raise ValueError("unsupported preview size")
+    if not data or len(data) > MESH_PREVIEW_MAX_BYTES:
+        raise ValueError("preview is empty or too large")
+    path = resolve_relpath(relpath, base_dir)
+    if not path.is_file() or _classify_kind(path) != "mesh":
+        raise ValueError("not a 3D model")
+    stat = path.stat()
+    if version != f"{int(stat.st_mtime)}-{stat.st_size}":
+        raise ValueError("the file changed")
+    key = thumbcache.cache_key(scope, relpath, int(stat.st_mtime), stat.st_size, width, height)
+    tmp_path = thumbcache.cache_root() / f".upload.{threading.get_ident()}.tmp"
+    tmp_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        tmp_path.write_bytes(data)
+        thumbcache.write_thumbnail(tmp_path, width, height, key)  # decodes and re-encodes: rejects non-images
+    except Exception as error:  # noqa: BLE001 - Pillow raises many kinds for broken or oversized input
+        raise ValueError("not a usable image") from error
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+async def _read_limited(request: web.Request, limit: int) -> bytes:
+    body = bytearray()
+    async for chunk in request.content.iter_chunked(65536):
+        body += chunk
+        if len(body) > limit:
+            raise web.HTTPRequestEntityTooLarge(max_size=limit, actual_size=len(body))
+    return bytes(body)
+
+
+async def _mesh_preview_upload(request: web.Request, base_dir: Path, scope: str) -> web.Response:
+    params = request.rel_url.query
+    relpath = params.get("relpath")
+    if not relpath:
+        raise web.HTTPBadRequest(text="relpath is required")
+    width = _int_param(params, "w", 256, maximum=2048)
+    height = _int_param(params, "h", width, maximum=2048)
+    data = await _read_limited(request, MESH_PREVIEW_MAX_BYTES)
+    try:
+        await asyncio.to_thread(store_mesh_preview, base_dir, scope, relpath, width, height, params.get("v", ""), data)
+    except ValueError as error:
+        raise web.HTTPBadRequest(text=str(error))
+    return web.json_response({"ok": True})
 
 
 def delete_assets(
@@ -462,6 +524,16 @@ async def output_thumb(request: web.Request) -> web.StreamResponse:
 @PromptServer.instance.routes.get("/assets_plus/input/thumb")
 async def input_thumb(request: web.Request) -> web.StreamResponse:
     return await _thumb_response(request, get_input_directory(), "input")
+
+
+@PromptServer.instance.routes.post("/assets_plus/output/thumb_upload")
+async def output_thumb_upload(request: web.Request) -> web.Response:
+    return await _mesh_preview_upload(request, get_output_directory(), "output")
+
+
+@PromptServer.instance.routes.post("/assets_plus/input/thumb_upload")
+async def input_thumb_upload(request: web.Request) -> web.Response:
+    return await _mesh_preview_upload(request, get_input_directory(), "input")
 
 
 @PromptServer.instance.routes.post("/assets_plus/thumb/clear")

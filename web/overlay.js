@@ -2,6 +2,7 @@ import { buildViewUrl, itemVersion, clamp, fetchJson, getFileExtension, warn, lo
 import { OUTPUT_TAB, INPUT_TAB, OVERLAY_COMMANDS } from './constants.js';
 import { t } from './i18n.js';
 import { createAudioControl, playback } from './audio.js';
+import { ensureModelViewer } from './meshpreview.js';
 
 export const overlayAPI = {
   getOverlayItem() {
@@ -279,15 +280,7 @@ export const overlayAPI = {
       overlayMedia.appendChild(control.element);
     } else if (item.type === "mesh") {
       // Lazily load the locally-bundled <model-viewer> (works offline / in air-gapped installs).
-      if (!customElements.get("model-viewer")) {
-        if (!document.querySelector('script[data-model-viewer-loader]')) {
-          const mvScript = document.createElement("script");
-          mvScript.type = "module";
-          mvScript.src = new URL("./vendor/model-viewer.min.js", import.meta.url).href;
-          mvScript.dataset.modelViewerLoader = "true";
-          document.head.appendChild(mvScript);
-        }
-      }
+      ensureModelViewer();
       let viewer = _meshEl;
       if (!viewer) {
         viewer = document.createElement("model-viewer");

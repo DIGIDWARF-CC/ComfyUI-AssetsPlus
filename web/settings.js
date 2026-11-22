@@ -1,7 +1,7 @@
 import { SETTINGS, SETTINGS_CATEGORY, THUMB_QUALITY_SIZES,
          DEFAULT_LIST_LIMIT, DEFAULT_THUMB_QUALITY, DEFAULT_DELETE_MODE,
          DEFAULT_CONFIRM_DELETE, DEFAULT_CONFIRM_DELETE_STARRED, DEFAULT_STARRED_FIRST,
-         DEFAULT_SHOW_OVERLAY_HELP,
+         DEFAULT_SHOW_OVERLAY_HELP, DEFAULT_MESH_PREVIEW_MAX_MB,
          DEFAULT_KEEP_OVERLAY_OPEN_ON_WORKFLOW, DEFAULT_LANGUAGE, DEFAULT_LOG_LEVEL,
          applySettingsCategory } from './constants.js';
 import { createSettingsButtonRenderer, resolveThumbnailQuality } from './utils.js';
@@ -85,6 +85,14 @@ const buildSettingsSchema = (
       name: t("settings.formats"),
       type: createFormatsRenderer(t, handlers.formats),
       defaultValue: "",
+    }),
+    withCategory({
+      id: SETTINGS.meshPreviewMaxMb,
+      name: t("settings.mesh_preview_max_mb"),
+      tooltip: t("settings.mesh_preview_max_mb.tooltip"),
+      type: "number",
+      defaultValue: DEFAULT_MESH_PREVIEW_MAX_MB,
+      attrs: { min: 0, step: 8 },
     }),
     withCategory({
       id: SETTINGS.thumbnailQuality,
