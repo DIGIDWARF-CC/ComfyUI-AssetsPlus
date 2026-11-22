@@ -84,12 +84,13 @@ class MeshPreviews {
 
   /**
    * Render `modelUrl` at size x size and upload the picture to `uploadUrl`.
-   * Resolves true when the server has the preview, false when it could not be made (too slow, no WebGL, refused).
+   * Resolves true when the server has the preview, false when it could not be made (too slow, no WebGL, refused,
+   * or `alive()` said the tile is gone before its turn came).
    */
-  render(key, { modelUrl, uploadUrl, size }) {
+  render(key, { modelUrl, uploadUrl, size, alive = null }) {
     if (this.pending.has(key)) return this.pending.get(key);
     const promise = new Promise((resolve) => {
-      this.queue.push({ modelUrl, uploadUrl, size, resolve });
+      this.queue.push({ modelUrl, uploadUrl, size, alive, resolve });
       this.pump();
     }).finally(() => this.pending.delete(key));
     this.pending.set(key, promise);
@@ -104,10 +105,13 @@ class MeshPreviews {
       while (this.queue.length) {
         const job = this.queue.shift();
         let ok = false;
-        try {
-          ok = await this.run(job);
-        } catch {
-          ok = false;
+        // A tile that was scrolled away while it waited needs no picture (it asks again if it comes back).
+        if (!job.alive || job.alive()) {
+          try {
+            ok = await this.run(job);
+          } catch {
+            ok = false;
+          }
         }
         job.resolve(ok);
       }

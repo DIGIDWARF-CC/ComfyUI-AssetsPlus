@@ -1744,7 +1744,7 @@ export class AssetsPlusExplorer {
 
     // Shown only in selection mode, on selected cards (see CSS).
     const selectMark = createElement("div", { className: "assets-plus-select-mark" });
-    selectMark.innerHTML = '<i class="pi pi-check"></i>';
+    selectMark.appendChild(createElement("i", { className: "pi pi-check" }));
 
     const isList = this.state.viewMode === "list";
     const isAudio = item.type === "audio";
@@ -1783,7 +1783,7 @@ export class AssetsPlusExplorer {
       // A big cube until the browser has rendered the model (see requestMeshPreview), then the picture on top.
       thumb.classList.add("assets-plus-thumb-mesh");
       const cube = createElement("div", { className: "assets-plus-mesh-icon" });
-      cube.innerHTML = '<i class="pi pi-box"></i>';
+      cube.appendChild(createElement("i", { className: "pi pi-box" }));
       const preview = document.createElement("img");
       preview.alt = item.filename;
       preview.decoding = "async";
@@ -1856,7 +1856,7 @@ export class AssetsPlusExplorer {
     const kindIcon = isList || isAudio ? null : CARD_KIND_ICONS[item.type];
     if (kindIcon) {
       const kindBadge = createElement("div", { className: "assets-plus-card-kind" });
-      kindBadge.innerHTML = `<i class="pi ${kindIcon}"></i>`;
+      kindBadge.appendChild(createElement("i", { className: `pi ${kindIcon}` }));
       kindBadge.setAttribute("aria-hidden", "true");
       card.appendChild(kindBadge);
     }
@@ -1869,12 +1869,12 @@ export class AssetsPlusExplorer {
       className: "assets-plus-card-menu-button assets-plus-card-download",
       attrs: { title: t("actions.download"), "aria-label": t("actions.download") },
     });
-    downloadButton.innerHTML = '<i class="pi pi-download"></i>';
+    downloadButton.appendChild(createElement("i", { className: "pi pi-download" }));
     const moreButton = createElement("button", {
       className: "assets-plus-card-menu-button assets-plus-card-more",
       attrs: { title: t("actions.more"), "aria-label": t("actions.more"), "aria-haspopup": "menu" },
     });
-    moreButton.innerHTML = '<i class="pi pi-ellipsis-h"></i>';
+    moreButton.appendChild(createElement("i", { className: "pi pi-ellipsis-h" }));
     menu.appendChild(downloadButton);
     menu.appendChild(moreButton);
     card.appendChild(menu);
@@ -1903,6 +1903,7 @@ export class AssetsPlusExplorer {
         modelUrl: buildViewUrl(item.relpath, tab, version),
         uploadUrl: `/assets_plus/${tab}/thumb_upload?${params.toString()}`,
         size,
+        alive: () => image.isConnected,
       })
       .then((ok) => {
         if (ok && image.isConnected) image.src = `${thumbUrl}&ready=1`;
@@ -2253,7 +2254,7 @@ export class AssetsPlusExplorer {
     } finally {
       if (epoch === this.listEpoch) {
         this.state.loading = false;
-        this.renderGrid({ reset: true });
+        this.renderGrid(); // only the status line changes now; the tiles were built when the page arrived
       }
     }
   }
@@ -2353,7 +2354,7 @@ export class AssetsPlusExplorer {
     button.setAttribute("title", label);
     button.setAttribute("aria-label", label);
     button.setAttribute("aria-pressed", starred ? "true" : "false");
-    button.innerHTML = `<i class="pi ${starred ? "pi-star-fill" : "pi-star"}"></i>`;
+    button.replaceChildren(createElement("i", { className: `pi ${starred ? "pi-star-fill" : "pi-star"}` }));
   }
 
   /** Move generated results into the input root so they become assets for generations. */
