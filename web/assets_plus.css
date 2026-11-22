@@ -1325,3 +1325,12 @@
   opacity: 0.4;
   cursor: default;
 }
+
+/* The popovers live in <body>, outside .assets-plus-root, so they need the colour variables themselves. */
+.assets-plus-popover,
+.assets-plus-view-menu {
+  --assets-plus-accent: var(--p-primary-color, #2563eb);
+  --assets-plus-accent-contrast: var(--p-primary-contrast-color, #ffffff);
+  --assets-plus-border: var(--border-color, rgba(148, 163, 184, 0.35));
+  user-select: none;
+}

@@ -282,6 +282,7 @@ export class AssetsPlusExplorer {
 
     // View menu (list / small tiles / large tiles); lives in <body> like the tile menu.
     const viewMenu = createElement("div", { className: "assets-plus-context-menu assets-plus-view-menu" });
+    viewMenu.addEventListener("contextmenu", (event) => event.preventDefault());
     const viewMenuList = createElement("div", { className: "assets-plus-context-menu-list" });
     viewMenu.appendChild(viewMenuList);
 

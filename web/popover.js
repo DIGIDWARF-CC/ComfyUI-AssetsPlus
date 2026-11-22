@@ -13,6 +13,9 @@ export const createPopover = ({ button, render, className = "" }) => {
   element.appendChild(list);
   document.body.appendChild(element);
 
+  // Our own menu: the browser's Copy / Select All menu has no business in it.
+  element.addEventListener("contextmenu", (event) => event.preventDefault());
+
   const isOpen = () => element.classList.contains("open");
 
   const place = () => {
