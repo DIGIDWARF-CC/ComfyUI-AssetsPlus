@@ -83,6 +83,12 @@ def scan_tree(
                 for entry in entries:
                     try:
                         if entry.is_dir(follow_symlinks=False):
+                            # A volume's trash can live inside the gallery root (e.g. Docker bind mounts).
+                            # Do not list trashed assets or let them be trashed again on refresh.
+                            if entry.name in (".Trash", ".Trashes") or (
+                                entry.name.startswith(".Trash-") and entry.name[7:].isdigit()
+                            ):
+                                continue
                             if recursive and (scan_depth is None or depth < scan_depth):
                                 walk(entry.path, f"{prefix}{entry.name}/", depth + 1)
                             continue
