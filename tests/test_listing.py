@@ -903,6 +903,60 @@ def test_announce_logs_one_banner_and_silent_hides_it() -> None:
         logs.apply_level("quiet")
 
 
+def test_scan_excludes_volume_trash_directories() -> None:
+    with tempfile.TemporaryDirectory(prefix="ap_trash_") as tmp:
+        root = Path(tmp)
+        visible = ("keep.png", "nested/keep.png", ".hidden/keep.png", ".Trash-backup/keep.png")
+        trashed = (
+            ".Trash-0/files/deleted.png",
+            ".Trash-1000/files/deleted.png",
+            ".Trash/1000/files/deleted.png",
+            "nested/.Trashes/501/deleted.png",
+        )
+        for name in visible + trashed:
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"x")
+
+        rows, stamps = listing.scan_tree(root, EXTENSIONS, True, None)
+        assert {row[listing.R_REL] for row in rows} == set(visible)
+        assert {Path(directory).relative_to(root).as_posix() for directory, _ in stamps} == {
+            ".", "nested", ".hidden", ".Trash-backup",
+        }
+
+        rows, _ = listing.scan_tree(root, EXTENSIONS, False, None)
+        assert {row[listing.R_REL] for row in rows} == {"keep.png"}
+
+
+def test_trashed_asset_does_not_reappear_after_refresh() -> None:
+    from unittest.mock import patch
+
+    with tempfile.TemporaryDirectory(prefix="ap_trash_refresh_") as tmp:
+        root = Path(tmp)
+        victim = root / "victim.png"
+        victim.write_bytes(b"x")
+        (root / "keep.png").write_bytes(b"x")
+        trash = root / ".Trash-0" / "files" / victim.name
+        before = listing.get_snapshot(root, EXTENSIONS, True, None, fresh=True)
+        assert {row[listing.R_REL] for row in before.rows} == {"keep.png", "victim.png"}
+
+        def fake_trash(path: Path) -> str:
+            trash.parent.mkdir(parents=True, exist_ok=True)
+            path.rename(trash)
+            return "native"
+
+        with patch.object(handlers, "move_to_trash", side_effect=fake_trash):
+            removed, failed, modes = handlers.delete_assets(root, ["victim.png"], "trash")
+        assert removed == ["victim.png"] and not failed
+        assert modes == {"victim.png": "trash"}
+        assert not victim.exists() and trash.is_file(), "trash must remain recoverable"
+
+        for fresh in (False, True):
+            after = listing.get_snapshot(root, EXTENSIONS, True, None, fresh=fresh)
+            assert {row[listing.R_REL] for row in after.rows} == {"keep.png"}
+        listing.invalidate(root)
+
+
 def run() -> int:
     tests = [(name, fn) for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
     failures = 0
